@@ -1,0 +1,32 @@
+{
+  "type": "mod",
+  "name": "stonehearth_performance_mod",
+  "version": "1.0.0",
+  "steam_file_id": "",
+  "info": {
+    "name": "Stonehearth Performance Mod",
+    "description": "CPU-focused micro-cache and safe coalescing for ACE 0.9.6 filter-heavy item queries.",
+    "author": "Codex",
+    "website": "",
+    "tags": [
+      "performance",
+      "server",
+      "ace"
+    ]
+  },
+  "dependencies": [
+    "stonehearth",
+    "rayyas_children",
+    "stonehearth_ace"
+  ],
+  "priority": 210,
+  "mixintos": [
+    "scripts/server/bootstrap.lua"
+  ],
+  "controllers": {
+    "stonehearth_performance_mod:call_handler": "scripts/perf_mod/call_handler.lua",
+    "stonehearth_performance_mod:settings": "stonehearth:services:server:mod_data_service"
+  },
+  "client_init_script": "ui/game/modes/mods/perf_mod/perf_mod_settings.js",
+  "ace_compatible": true
+}

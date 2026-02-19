@@ -1,0 +1,20 @@
+{
+  "stonehearth_performance_mod": {
+    "ui": {
+      "settings": {
+        "title": "Performance Mod",
+        "description": "Performance-only optimization for storage/inventory filter cache hotspots.",
+        "profile": "Optimization Profile",
+        "profiles": {
+          "safe": "Safe (same-tick coalescing, very short cache TTL)",
+          "balanced": "Balanced (moderate cache + coalescing + strict fallback)",
+          "aggressive": "Aggressive (largest cache/coalescing with hard deadlines)"
+        },
+        "instrumentation": "Enable instrumentation counters",
+        "discovery": "Enable patch discovery mode",
+        "long_ticks_only": "Log long ticks only",
+        "save": "Apply"
+      }
+    }
+  }
+}
