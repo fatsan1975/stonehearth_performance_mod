@@ -5,7 +5,7 @@
     "version": 3,
     "steam_file_id": ""
   },
-  "author": "Codex",
+  "author": "Fatsan",
   "description": "CPU-focused micro-cache and safe coalescing for ACE 0.9.6 filter-heavy item queries.",
   "default_locale": "en",
   "dependencies": [
