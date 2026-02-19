@@ -16,7 +16,7 @@ This mod targets the primary long-tick hotspot seen in perf graphs (`filter_cach
 ## Compatibility and safety
 
 - Designed for ACE Pre-Release 0.9.6 monkey patch style.
-- Load order: put this mod **after** `stonehearth_ace` (priority 210 in manifest).
+- Load order: put this mod **after** `stonehearth_ace` (via `dependencies` in `manifest.json`).
 - Defensive patching via `pcall(require, ...)` and nil-checked wrappers.
 - If uncertainty is detected, wrappers default to original behavior.
 
@@ -87,3 +87,11 @@ When enabled:
 
 - `find scripts monkey_patches -name '*.lua' -print0 | xargs -0 -n1 luac -p`
 - `lua tests/run_lua_tests.lua`
+
+
+## Troubleshooting: Invalid Manifest
+
+If the game shows `Invalid Manifest`, verify:
+- `manifest.json` has `info.namespace` and `info.version` set to API version `3`.
+- The file is valid JSON (UTF-8, no trailing commas).
+- Folder layout is exactly `.../mods/stonehearth_performance_mod/manifest.json` (no extra nested folder).
