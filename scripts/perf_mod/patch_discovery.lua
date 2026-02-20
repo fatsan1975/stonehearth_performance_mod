@@ -9,6 +9,14 @@ local KNOWN_STRINGS = {
    'stonehearth.inventory', 'stonehearth.storage', 'stonehearth:storage', 'stonehearth:inventory'
 }
 
+local DISCOVERY_METHOD_HINTS = {
+   filter_cache_cb = true,
+   get_matching_items = true,
+   get_items = true,
+   find_items = true,
+   find_best = true
+}
+
 local KNOWN_MODULE_CANDIDATES = {
    'stonehearth_ace.services.server.storage',
    'stonehearth_ace.services.server.inventory',
@@ -49,6 +57,18 @@ local function _upvalue_hint(fn)
       end
    end
    return false
+end
+
+
+local function _infer_context(module_name, key)
+   local hay = (tostring(module_name) .. ':' .. tostring(key)):lower()
+   if string.find(hay, 'inventory', 1, true) then
+      return 'inventory'
+   end
+   if string.find(hay, 'storage', 1, true) or string.find(hay, 'stockpile', 1, true) then
+      return 'storage'
+   end
+   return 'filter'
 end
 
 function PatchDiscovery:initialize(optimizer, service, instrumentation, log)
@@ -122,7 +142,14 @@ function PatchDiscovery:_scan_table(module_name, table_value, ranked)
             rank = rank + 15
          end
 
-         if rank > 0 and not string.find(tostring(key), 'new', 1, true) and not string.find(tostring(key), 'initialize', 1, true) then
+         local key_s = tostring(key)
+         local key_l = string.lower(key_s)
+         if rank > 0
+            and DISCOVERY_METHOD_HINTS[key_s]
+            and not string.find(key_l, 'new', 1, true)
+            and not string.find(key_l, 'initialize', 1, true)
+            and not string.find(key_l, 'make_filter', 1, true)
+            and not string.find(key_l, 'apply_filter', 1, true) then
             ranked[#ranked + 1] = {
                module_name = module_name,
                table_value = table_value,
@@ -141,7 +168,8 @@ function PatchDiscovery:_hook_candidate(candidate)
    end
 
    local ok, wrapped = pcall(function()
-      return self._optimizer:wrap_query(candidate.module_name .. ':' .. tostring(candidate.key), candidate.fn)
+      local context = _infer_context(candidate.module_name, candidate.key)
+      return self._optimizer:wrap_query(context, candidate.fn)
    end)
 
    if not ok then

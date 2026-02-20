@@ -3,7 +3,7 @@
     "name" : "Performance mod for ACE Stonehearth",
     "namespace" : "stonehearth_performance_mod",
     "version" : 3,
-    "steam_file_id" : "3669297036"
+    "steam_file_id" : ""
   },
   "author": "Fatih1975",
   "description": "CPU-focused micro-cache and safe coalescing for ACE 0.9.6 filter-heavy item queries.",

@@ -31,8 +31,6 @@ function M.apply(service)
       local ok, mod = pcall(require, path)
       if ok and type(mod) == 'table' then
          patched = _try_patch_named_function(mod, optimizer, 'filter', 'filter_cache_cb') or patched
-         patched = _try_patch_named_function(mod, optimizer, 'filter', 'apply_filter') or patched
-         patched = _try_patch_named_function(mod, optimizer, 'filter', 'make_filter') or patched
       end
    end
 

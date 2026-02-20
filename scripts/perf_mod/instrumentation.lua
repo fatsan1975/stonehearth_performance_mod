@@ -10,7 +10,11 @@ local COUNTER_NAMES = {
    'perfmod:full_scan_fallbacks',
    'perfmod:deadline_fallbacks',
    'perfmod:avg_query_ms',
-   'perfmod:long_ticks'
+   'perfmod:long_ticks',
+   'perfmod:admission_skips',
+   'perfmod:oversized_skips',
+   'perfmod:dirty_negative_bypasses',
+   'perfmod:urgent_bypasses'
 }
 
 function Instrumentation:initialize(log)

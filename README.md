@@ -27,18 +27,21 @@ This mod targets the primary long-tick hotspot seen in perf graphs (`filter_cach
 - Coalescing: same-tick
 - Query deadline cap: 10ms
 - Deferred wait cap: 0ms (no intentional deferral)
+- Cache cap: ~1200 entries; max cached result size: 96; admission: first-hit cache enabled
 
 ### BALANCED
-- TTL: 0.55s (negative TTL 0.8s)
-- Coalescing: ~75ms
-- Query deadline cap: 15ms
-- Deferred wait cap: 75ms
+- TTL: 0.45s (negative TTL 0.65s)
+- Coalescing: ~60ms
+- Query deadline cap: 14ms
+- Deferred wait cap: 60ms
+- Cache cap: ~2200 entries; max cached result size: 128; admission: cache after 2nd hit; urgent inventory bypass
 
 ### AGGRESSIVE
-- TTL: 1.2s (negative TTL 1.8s)
-- Coalescing: ~150ms
-- Query deadline cap: 24ms
-- Deferred wait cap: 150ms
+- TTL: 0.75s (negative TTL 1.0s)
+- Coalescing: ~90ms
+- Query deadline cap: 18ms
+- Deferred wait cap: 80ms
+- Cache cap: ~3200 entries; max cached result size: 160; admission: cache after 2nd hit; urgent inventory bypass
 
 ## Instrumentation counters
 
@@ -52,6 +55,10 @@ This mod targets the primary long-tick hotspot seen in perf graphs (`filter_cach
 - `perfmod:deadline_fallbacks`
 - `perfmod:avg_query_ms`
 - `perfmod:long_ticks`
+- `perfmod:admission_skips`
+- `perfmod:oversized_skips`
+- `perfmod:dirty_negative_bypasses`
+- `perfmod:urgent_bypasses`
 
 ## Patch discovery
 
@@ -97,9 +104,6 @@ If the game shows `Invalid Manifest`, verify:
 - Folder layout is exactly `.../mods/stonehearth_performance_mod/manifest.json` (no extra nested folder).
 
 
-OVERALL MOD SCORE 9.5/10
-Storage optimization: 10/10
-Compatibility: 10/10
-Memory stability: 10/10
-Sim speed improvement: 9/10
-Remaining bottlenecks: normal
+## Multiplayer stability notes
+
+To avoid worker-idle stalls under very high item counts, this mod now uses stricter cache keys (target + query args), shorter negative-cache windows in BALANCED/AGGRESSIVE, bounded cache capacity with oldest-entry pruning, second-hit cache admission (to avoid one-off pollution), urgent inventory bypass, and a conservative discovery allowlist that only wraps known query-shaped methods.
