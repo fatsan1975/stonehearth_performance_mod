@@ -15,17 +15,6 @@ function QueryOptimizer:initialize(clock, cache, coalescer, instrumentation, set
    self._context_state = {}
 end
 
-function QueryOptimizer:borrow_table()
-   return table.remove(self._table_pool) or {}
-end
-
-function QueryOptimizer:return_table(t)
-   for k in pairs(t) do
-      t[k] = nil
-   end
-   self._table_pool[#self._table_pool + 1] = t
-end
-
 function QueryOptimizer:_get_context_state(context)
    local state = self._context_state[context]
    if not state then
@@ -88,21 +77,22 @@ local function _args_signature(...)
    return sig
 end
 
-local function _is_urgent_query(context, ...)
+local function _classify_query(context, ...)
    if context == 'inventory' then
-      return true
+      return 'urgent'
    end
 
    local first = select(1, ...)
-   if type(first) ~= 'table' then
-      return false
+   if type(first) == 'table' then
+      if first.require_immediate or first.urgent or first.allow_reserved then
+         return 'urgent'
+      end
+      if first.limit and type(first.limit) == 'number' and first.limit <= 3 then
+         return 'urgent'
+      end
    end
 
-   if first.require_immediate or first.urgent or first.allow_reserved then
-      return true
-   end
-
-   return false
+   return 'normal'
 end
 
 local function _result_size_hint(first)
@@ -142,17 +132,25 @@ function QueryOptimizer:wrap_query(context, original_fn)
       local profile = self:_effective_profile(self._settings:get_profile_data(), state)
       local pipeline_start = self._clock:get_realtime_seconds()
 
+      local query_class = _classify_query(context, ...)
+      if profile.urgent_cache_bypass and query_class == 'urgent' then
+         self._instrumentation:inc('perfmod:urgent_bypasses')
+         local started_urgent = self._clock:get_realtime_seconds()
+         local out = { self:_fallback_to_original(original_fn, target, filter, ...) }
+         self._instrumentation:observe_query_time(self._clock:get_elapsed_ms(started_urgent))
+         return unpack(out)
+      end
+
       local player_id = target and target.get_player_id and target:get_player_id() or nil
       local target_key = _target_identity(target)
       local args_key = _args_signature(...)
       local key = self._cache:make_key(filter, context, player_id, target_key, args_key)
 
-      local is_urgent = _is_urgent_query(context, ...)
-      if profile.urgent_cache_bypass and is_urgent then
-         self._instrumentation:inc('perfmod:urgent_bypasses')
-         local started_urgent = self._clock:get_realtime_seconds()
+      if not key then
+         self._instrumentation:inc('perfmod:key_bypass_complex')
+         local started_complex = self._clock:get_realtime_seconds()
          local out = { self:_fallback_to_original(original_fn, target, filter, ...) }
-         self._instrumentation:observe_query_time(self._clock:get_elapsed_ms(started_urgent))
+         self._instrumentation:observe_query_time(self._clock:get_elapsed_ms(started_complex))
          return unpack(out)
       end
 
@@ -191,13 +189,16 @@ function QueryOptimizer:wrap_query(context, original_fn)
          self._instrumentation:inc('perfmod:deadline_fallbacks')
       end
 
+      local is_negative = _is_negative_result(result[1])
       local result_size = _result_size_hint(result[1])
-      if result_size > profile.max_cached_result_size then
+      if is_negative and not profile.cache_negative_results then
+         self._instrumentation:inc('perfmod:negative_cache_skips')
+      elseif result_size > profile.max_cached_result_size then
          self._instrumentation:inc('perfmod:oversized_skips')
       else
-         local seen_count = self._cache:touch_key(key)
+         local seen_count = self._cache:touch_key(key, profile.max_cache_entries * 2)
          if seen_count >= profile.admit_after_hits then
-            self._cache:set(key, context, result, now, _is_negative_result(result[1]), profile.max_cache_entries)
+            self._cache:set(key, context, result, now, is_negative, profile.max_cache_entries)
          else
             self._instrumentation:inc('perfmod:admission_skips')
          end

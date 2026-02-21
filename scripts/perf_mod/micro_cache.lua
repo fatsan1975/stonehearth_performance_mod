@@ -1,25 +1,32 @@
 local MicroCache = class()
 
+local MAX_HASH_DEPTH = 3
+local MAX_HASH_KEYS = 24
+
 local function _clear_table(t)
    for k in pairs(t) do
       t[k] = nil
    end
 end
 
-local function _stable_hash(value, scratch, visited)
+local function _stable_hash(value, scratch, visited, depth)
    local value_type = type(value)
    if value_type == 'nil' then
-      return 'n'
+      return 'n', true
    elseif value_type == 'number' or value_type == 'boolean' then
-      return tostring(value)
+      return tostring(value), true
    elseif value_type == 'string' then
-      return 's:' .. value
+      return 's:' .. value, true
    elseif value_type ~= 'table' then
-      return value_type .. ':' .. tostring(value)
+      return value_type .. ':' .. tostring(value), false
+   end
+
+   if depth >= MAX_HASH_DEPTH then
+      return nil, false
    end
 
    if visited[value] then
-      return 'cycle'
+      return 'cycle', true
    end
 
    visited[value] = true
@@ -29,6 +36,10 @@ local function _stable_hash(value, scratch, visited)
    local count = 0
    for k in pairs(value) do
       count = count + 1
+      if count > MAX_HASH_KEYS then
+         visited[value] = nil
+         return nil, false
+      end
       keys[count] = k
    end
 
@@ -41,11 +52,17 @@ local function _stable_hash(value, scratch, visited)
 
    for i = 1, count do
       local k = keys[i]
-      chunks[i] = _stable_hash(k, scratch, visited) .. '=' .. _stable_hash(value[k], scratch, visited)
+      local kh, kok = _stable_hash(k, scratch, visited, depth + 1)
+      local vh, vok = _stable_hash(value[k], scratch, visited, depth + 1)
+      if not kok or not vok then
+         visited[value] = nil
+         return nil, false
+      end
+      chunks[i] = kh .. '=' .. vh
    end
 
    visited[value] = nil
-   return '{' .. table.concat(chunks, ',') .. '}'
+   return '{' .. table.concat(chunks, ',') .. '}', true
 end
 
 function MicroCache:initialize(clock)
@@ -54,6 +71,7 @@ function MicroCache:initialize(clock)
    self._entry_count = 0
    self._generation = {}
    self._seen_keys = {}
+   self._seen_count = 0
    self._scratch = {
       keys = {},
       chunks = {}
@@ -70,6 +88,7 @@ function MicroCache:invalidate(context)
    self._entry_count = 0
    self._generation = {}
    self._seen_keys = {}
+   self._seen_count = 0
 end
 
 function MicroCache:get_generation(context)
@@ -78,8 +97,16 @@ end
 
 function MicroCache:make_key(filter, context, player_id, region_key, extra_key)
    local visited = {}
-   local filter_hash = _stable_hash(filter, self._scratch, visited)
-   local extra_hash = _stable_hash(extra_key, self._scratch, visited)
+   local filter_hash, filter_ok = _stable_hash(filter, self._scratch, visited, 0)
+   if not filter_ok then
+      return nil
+   end
+
+   local extra_hash, extra_ok = _stable_hash(extra_key, self._scratch, visited, 0)
+   if not extra_ok then
+      return nil
+   end
+
    return table.concat({
       context or 'unknown',
       player_id or '-',
@@ -89,9 +116,21 @@ function MicroCache:make_key(filter, context, player_id, region_key, extra_key)
    }, '|')
 end
 
-function MicroCache:touch_key(key)
+function MicroCache:touch_key(key, max_seen)
    local hit_count = (self._seen_keys[key] or 0) + 1
+   if self._seen_keys[key] == nil then
+      self._seen_count = self._seen_count + 1
+   end
    self._seen_keys[key] = hit_count
+
+   if max_seen and self._seen_count > max_seen then
+      self._seen_keys = {}
+      self._seen_count = 0
+      self._seen_keys[key] = 1
+      self._seen_count = 1
+      return 1
+   end
+
    return hit_count
 end
 
@@ -132,30 +171,35 @@ function MicroCache:set(key, context, value, now, is_negative, max_entries)
    }
 
    if max_entries and self._entry_count > max_entries then
-      self:_prune_oldest(math.max(1, math.floor(max_entries * 0.1)))
+      self:_prune_approx_oldest(math.max(1, math.min(8, math.floor(max_entries * 0.02))))
    end
 end
 
-function MicroCache:_prune_oldest(remove_count)
-   local candidates = {}
-   for key, entry in pairs(self._entries) do
-      candidates[#candidates + 1] = {
-         key = key,
-         time = entry.time
-      }
-   end
+function MicroCache:_prune_approx_oldest(remove_count)
+   local oldest_key = nil
+   local oldest_time = nil
 
-   table.sort(candidates, function(a, b)
-      return a.time < b.time
-   end)
-
-   local limit = math.min(remove_count, #candidates)
-   for i = 1, limit do
-      local key = candidates[i].key
-      if self._entries[key] then
-         self._entries[key] = nil
-         self._entry_count = math.max(0, self._entry_count - 1)
+   for _ = 1, remove_count do
+      oldest_key = nil
+      oldest_time = nil
+      local scanned = 0
+      for key, entry in pairs(self._entries) do
+         scanned = scanned + 1
+         if oldest_time == nil or entry.time < oldest_time then
+            oldest_time = entry.time
+            oldest_key = key
+         end
+         if scanned >= 512 then
+            break
+         end
       end
+
+      if oldest_key == nil then
+         return
+      end
+
+      self._entries[oldest_key] = nil
+      self._entry_count = math.max(0, self._entry_count - 1)
    end
 end
 

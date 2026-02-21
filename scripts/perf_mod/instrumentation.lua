@@ -14,7 +14,9 @@ local COUNTER_NAMES = {
    'perfmod:admission_skips',
    'perfmod:oversized_skips',
    'perfmod:dirty_negative_bypasses',
-   'perfmod:urgent_bypasses'
+   'perfmod:urgent_bypasses',
+   'perfmod:key_bypass_complex',
+   'perfmod:negative_cache_skips'
 }
 
 function Instrumentation:initialize(log)

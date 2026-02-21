@@ -59,6 +59,8 @@ This mod targets the primary long-tick hotspot seen in perf graphs (`filter_cach
 - `perfmod:oversized_skips`
 - `perfmod:dirty_negative_bypasses`
 - `perfmod:urgent_bypasses`
+- `perfmod:key_bypass_complex`
+- `perfmod:negative_cache_skips`
 
 ## Patch discovery
 
@@ -106,4 +108,9 @@ If the game shows `Invalid Manifest`, verify:
 
 ## Multiplayer stability notes
 
-To avoid worker-idle stalls under very high item counts, this mod now uses stricter cache keys (target + query args), shorter negative-cache windows in BALANCED/AGGRESSIVE, bounded cache capacity with oldest-entry pruning, second-hit cache admission (to avoid one-off pollution), urgent inventory bypass, and a conservative discovery allowlist that only wraps known query-shaped methods.
+To avoid worker-idle stalls under very high item counts, this mod now uses stricter cache keys (target + query args), shorter negative-cache windows in BALANCED/AGGRESSIVE, bounded cache capacity with oldest-entry pruning, second-hit cache admission (to avoid one-off pollution), urgent inventory bypass, complex filter signatures bypass (safety over risky hashing), and a conservative discovery allowlist that only wraps known query-shaped methods.
+
+
+## Item visibility safety
+
+To reduce "item exists but not found" reports, negative result caching is disabled by default in all profiles. Positive-result cache still provides the performance win, while negative misses always re-check on the next query.

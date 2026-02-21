@@ -13,7 +13,8 @@ Config.PROFILES = {
       max_cache_entries = 1200,
       max_cached_result_size = 96,
       admit_after_hits = 1,
-      urgent_cache_bypass = false
+      urgent_cache_bypass = false,
+      cache_negative_results = false
    },
    BALANCED = {
       id = 'BALANCED',
@@ -27,7 +28,8 @@ Config.PROFILES = {
       max_cache_entries = 2200,
       max_cached_result_size = 128,
       admit_after_hits = 2,
-      urgent_cache_bypass = true
+      urgent_cache_bypass = true,
+      cache_negative_results = false
    },
    AGGRESSIVE = {
       id = 'AGGRESSIVE',
@@ -41,7 +43,8 @@ Config.PROFILES = {
       max_cache_entries = 3200,
       max_cached_result_size = 160,
       admit_after_hits = 2,
-      urgent_cache_bypass = true
+      urgent_cache_bypass = true,
+      cache_negative_results = false
    }
 }
 

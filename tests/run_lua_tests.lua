@@ -49,6 +49,10 @@ local key3 = cache:make_key({ a = 1, b = 2 }, 'ctx', 'p1', nil, { q = 1 })
 local key4 = cache:make_key({ a = 1, b = 2 }, 'ctx', 'p1', nil, { q = 2 })
 assert(key3 ~= key4, 'extra key must affect cache key')
 
+local deep = { a = { b = { c = { d = 1 } } } }
+local deep_key = cache:make_key(deep, 'ctx', 'p1', nil)
+assert_eq(deep_key, nil, 'deep filter should bypass cache keying')
+
 cache:set(key1, 'ctx', { 'ok' }, 0, false)
 assert(cache:get(key1, 'ctx', 0.1, 1.0, 1.0), 'cache hit expected')
 cache:invalidate('ctx')
@@ -128,5 +132,28 @@ urgent_wrapped({}, { value = 10 })
 urgent_wrapped({}, { value = 10 })
 assert_eq(urgent_calls, 2, 'urgent inventory path should bypass cache')
 assert((counters['perfmod:urgent_bypasses'] or 0) >= 1, 'urgent bypass counter')
+local complex_calls = 0
+local complex_wrapped = optimizer:wrap_query('ctx', function(_, filter)
+   complex_calls = complex_calls + 1
+   return { filter }
+end)
+complex_wrapped({}, { a = { b = { c = { d = 1 } } } })
+complex_wrapped({}, { a = { b = { c = { d = 1 } } } })
+assert_eq(complex_calls, 2, 'complex keys should bypass cache')
+assert((counters['perfmod:key_bypass_complex'] or 0) >= 1, 'key bypass counter')
+
+local flip = 0
+local neg_safe = optimizer:wrap_query('storage', function(_, _)
+   flip = flip + 1
+   if flip == 1 then
+      return nil
+   end
+   return { 'found' }
+end)
+local n1 = neg_safe({}, { any = true })
+local n2 = neg_safe({}, { any = true })
+assert_eq(n1, nil, 'first negative')
+assert_eq(n2[1], 'found', 'negative caching disabled should not stick misses')
+assert((counters['perfmod:negative_cache_skips'] or 0) >= 1, 'negative cache skip counter')
 
 print('All Lua tests passed')

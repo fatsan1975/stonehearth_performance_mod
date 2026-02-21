@@ -2,7 +2,7 @@
   "info" : {
     "name" : "Performance mod for ACE Stonehearth",
     "namespace" : "stonehearth_performance_mod",
-    "version" : 3,
+    "version" : 5,
     "steam_file_id" : ""
   },
   "author": "Fatih1975",
