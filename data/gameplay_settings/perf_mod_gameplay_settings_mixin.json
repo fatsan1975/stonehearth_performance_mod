@@ -1,0 +1,61 @@
+{
+  "stonehearth_performance_mod": {
+    "profile": {
+      "type": "list",
+      "display_name": "i18n(stonehearth_performance_mod:ui.settings.profile)",
+      "description": "i18n(stonehearth_performance_mod:ui.settings.description)",
+      "default": "SAFE",
+      "ordinal": 1,
+      "values": {
+        "SAFE": {
+          "ordinal": 1,
+          "display_name": "i18n(stonehearth_performance_mod:ui.settings.profiles.safe)",
+          "description": "i18n(stonehearth_performance_mod:ui.settings.profiles.safe)"
+        },
+        "BALANCED": {
+          "ordinal": 2,
+          "display_name": "i18n(stonehearth_performance_mod:ui.settings.profiles.balanced)",
+          "description": "i18n(stonehearth_performance_mod:ui.settings.profiles.balanced)"
+        },
+        "AGGRESSIVE": {
+          "ordinal": 3,
+          "display_name": "i18n(stonehearth_performance_mod:ui.settings.profiles.aggressive)",
+          "description": "i18n(stonehearth_performance_mod:ui.settings.profiles.aggressive)"
+        }
+      },
+      "on_change": {
+        "call": "set_profile_command"
+      }
+    },
+    "instrumentation_enabled": {
+      "type": "boolean",
+      "display_name": "i18n(stonehearth_performance_mod:ui.settings.instrumentation)",
+      "description": "i18n(stonehearth_performance_mod:ui.settings.instrumentation)",
+      "default": false,
+      "ordinal": 2,
+      "on_change": {
+        "call": "set_instrumentation_command"
+      }
+    },
+    "discovery_enabled": {
+      "type": "boolean",
+      "display_name": "i18n(stonehearth_performance_mod:ui.settings.discovery)",
+      "description": "i18n(stonehearth_performance_mod:ui.settings.discovery)",
+      "default": false,
+      "ordinal": 3,
+      "on_change": {
+        "call": "set_discovery_command"
+      }
+    },
+    "long_ticks_only": {
+      "type": "boolean",
+      "display_name": "i18n(stonehearth_performance_mod:ui.settings.long_ticks_only)",
+      "description": "i18n(stonehearth_performance_mod:ui.settings.long_ticks_only)",
+      "default": true,
+      "ordinal": 4,
+      "on_change": {
+        "call": "set_long_ticks_only_command"
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "stonehearth_performance_mod",
+  "namespace": "stonehearth_performance_mod",
+  "version": "1.0.0",
+  "description": "Performance-only optimization layer for filter cache hot paths.",
+  "author": "Codex",
+  "dependencies": [
+    "stonehearth",
+    "stonehearth_ace"
+  ]
+}
