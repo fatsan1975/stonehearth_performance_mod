@@ -6,10 +6,7 @@ local TARGETS = {
 }
 
 local METHODS = {
-   'filter_cache_cb',
-   'get_matching_items',
-   'find_items',
-   'find_best'
+   'filter_cache_cb'
 }
 
 local INVALIDATION_METHODS = {

@@ -14,7 +14,10 @@ Config.PROFILES = {
       max_cached_result_size = 96,
       admit_after_hits = 1,
       urgent_cache_bypass = false,
-      cache_negative_results = false
+      cache_negative_results = false,
+      circuit_failures = 3,
+      circuit_window_s = 10,
+      circuit_open_s = 30
    },
    BALANCED = {
       id = 'BALANCED',
@@ -24,12 +27,15 @@ Config.PROFILES = {
       incremental_budget_ms = 1.5,
       query_deadline_ms = 14,
       deferred_wait_ms = 60,
-      max_candidates_to_hook = 2,
+      max_candidates_to_hook = 1,
       max_cache_entries = 2200,
       max_cached_result_size = 128,
       admit_after_hits = 2,
       urgent_cache_bypass = true,
-      cache_negative_results = false
+      cache_negative_results = false,
+      circuit_failures = 3,
+      circuit_window_s = 10,
+      circuit_open_s = 30
    },
    AGGRESSIVE = {
       id = 'AGGRESSIVE',
@@ -39,12 +45,15 @@ Config.PROFILES = {
       incremental_budget_ms = 2.5,
       query_deadline_ms = 18,
       deferred_wait_ms = 80,
-      max_candidates_to_hook = 2,
+      max_candidates_to_hook = 1,
       max_cache_entries = 3200,
       max_cached_result_size = 160,
       admit_after_hits = 2,
       urgent_cache_bypass = true,
-      cache_negative_results = false
+      cache_negative_results = false,
+      circuit_failures = 3,
+      circuit_window_s = 10,
+      circuit_open_s = 30
    }
 }
 

@@ -16,7 +16,9 @@ local COUNTER_NAMES = {
    'perfmod:dirty_negative_bypasses',
    'perfmod:urgent_bypasses',
    'perfmod:key_bypass_complex',
-   'perfmod:negative_cache_skips'
+   'perfmod:negative_cache_skips',
+   'perfmod:safety_fallbacks',
+   'perfmod:circuit_open_bypasses'
 }
 
 function Instrumentation:initialize(log)

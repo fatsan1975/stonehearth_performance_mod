@@ -74,7 +74,25 @@ local instrumentation = {
 
 local settings = {
    get_profile_data = function()
-      return Config.get_profile('BALANCED')
+      local p = Config.get_profile('BALANCED')
+      return {
+         id = p.id,
+         cache_ttl = p.cache_ttl,
+         negative_ttl = p.negative_ttl,
+         coalesce_ms = p.coalesce_ms,
+         incremental_budget_ms = p.incremental_budget_ms,
+         query_deadline_ms = p.query_deadline_ms,
+         deferred_wait_ms = p.deferred_wait_ms,
+         max_candidates_to_hook = p.max_candidates_to_hook,
+         max_cache_entries = p.max_cache_entries,
+         max_cached_result_size = p.max_cached_result_size,
+         admit_after_hits = p.admit_after_hits,
+         urgent_cache_bypass = p.urgent_cache_bypass,
+         cache_negative_results = p.cache_negative_results,
+         circuit_failures = 2,
+         circuit_window_s = 9999,
+         circuit_open_s = 9999
+      }
    end
 }
 
@@ -155,5 +173,29 @@ local n2 = neg_safe({}, { any = true })
 assert_eq(n1, nil, 'first negative')
 assert_eq(n2[1], 'found', 'negative caching disabled should not stick misses')
 assert((counters['perfmod:negative_cache_skips'] or 0) >= 1, 'negative cache skip counter')
+
+local fail_calls = 0
+local fail_wrapped = optimizer:wrap_query('ctx', function(_, _)
+   fail_calls = fail_calls + 1
+   return { 'ok' }
+end)
+cache.make_key = function() error('boom') end
+local sf = fail_wrapped({}, { any = true })
+assert_eq(sf[1], 'ok', 'safety fallback returns original result')
+assert_eq(fail_calls, 1, 'original called on safety fallback')
+assert((counters['perfmod:safety_fallbacks'] or 0) >= 1, 'safety fallback counter')
+
+
+local fail2_calls = 0
+local fail2_wrapped = optimizer:wrap_query('storage', function(_, _)
+   fail2_calls = fail2_calls + 1
+   return { 'ok2' }
+end)
+cache.make_key = function() error('boom2') end
+fail2_wrapped({}, { any = true })
+fail2_wrapped({}, { any = true })
+local c3 = fail2_wrapped({}, { any = true })
+assert_eq(c3[1], 'ok2', 'circuit open still returns original')
+assert((counters['perfmod:circuit_open_bypasses'] or 0) >= 1, 'circuit open counter')
 
 print('All Lua tests passed')

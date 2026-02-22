@@ -11,8 +11,8 @@ function QueryOptimizer:initialize(clock, cache, coalescer, instrumentation, set
    self._instrumentation = instrumentation
    self._settings = settings
    self._log = log
-   self._table_pool = {}
    self._context_state = {}
+   self._circuit_state = {}
 end
 
 function QueryOptimizer:_get_context_state(context)
@@ -26,6 +26,48 @@ function QueryOptimizer:_get_context_state(context)
       self._context_state[context] = state
    end
    return state
+end
+
+
+
+function QueryOptimizer:_get_circuit_state(context)
+   local state = self._circuit_state[context]
+   if not state then
+      state = {
+         failures = {},
+         open_until = 0
+      }
+      self._circuit_state[context] = state
+   end
+   return state
+end
+
+function QueryOptimizer:_record_failure(context, profile, now)
+   local circuit = self:_get_circuit_state(context)
+   local failures = circuit.failures
+   failures[#failures + 1] = now
+
+   local window_s = profile.circuit_window_s or 10
+   local keep_from = now - window_s
+   local kept = {}
+   for i = 1, #failures do
+      local ts = failures[i]
+      if ts >= keep_from then
+         kept[#kept + 1] = ts
+      end
+   end
+   circuit.failures = kept
+
+   local threshold = profile.circuit_failures or 3
+   if #kept >= threshold then
+      circuit.open_until = now + (profile.circuit_open_s or 30)
+      circuit.failures = {}
+   end
+end
+
+function QueryOptimizer:_is_circuit_open(context, now)
+   local circuit = self:_get_circuit_state(context)
+   return now < (circuit.open_until or 0)
 end
 
 function QueryOptimizer:mark_inventory_dirty(context)
@@ -126,86 +168,109 @@ function QueryOptimizer:_fallback_to_original(original_fn, target, filter, ...)
    return original_fn(target, filter, ...)
 end
 
+function QueryOptimizer:_run_safe_optimized(context, profile, fn, original_fn, target, filter, packed_args)
+   local ok, a, b, c, d, e, f = pcall(fn)
+   if ok then
+      return a, b, c, d, e, f
+   end
+
+   self._instrumentation:inc('perfmod:safety_fallbacks')
+   self:_record_failure(context, profile, self._clock:get_realtime_seconds())
+   if self._log and self._log.warning then
+      self._log:warning('Optimizer safety fallback due to error: %s', tostring(a))
+   end
+   return self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n))
+end
+
 function QueryOptimizer:wrap_query(context, original_fn)
    return function(target, filter, ...)
+      local packed_args = { n = select('#', ...), ... }
       local state = self:_get_context_state(context)
       local profile = self:_effective_profile(self._settings:get_profile_data(), state)
-      local pipeline_start = self._clock:get_realtime_seconds()
-
-      local query_class = _classify_query(context, ...)
-      if profile.urgent_cache_bypass and query_class == 'urgent' then
-         self._instrumentation:inc('perfmod:urgent_bypasses')
-         local started_urgent = self._clock:get_realtime_seconds()
-         local out = { self:_fallback_to_original(original_fn, target, filter, ...) }
-         self._instrumentation:observe_query_time(self._clock:get_elapsed_ms(started_urgent))
-         return unpack(out)
+      local now_for_circuit = self._clock:get_realtime_seconds()
+      if self:_is_circuit_open(context, now_for_circuit) then
+         self._instrumentation:inc('perfmod:circuit_open_bypasses')
+         return self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n))
       end
 
-      local player_id = target and target.get_player_id and target:get_player_id() or nil
-      local target_key = _target_identity(target)
-      local args_key = _args_signature(...)
-      local key = self._cache:make_key(filter, context, player_id, target_key, args_key)
+      return self:_run_safe_optimized(context, profile, function()
+         local pipeline_start = self._clock:get_realtime_seconds()
 
-      if not key then
-         self._instrumentation:inc('perfmod:key_bypass_complex')
-         local started_complex = self._clock:get_realtime_seconds()
-         local out = { self:_fallback_to_original(original_fn, target, filter, ...) }
-         self._instrumentation:observe_query_time(self._clock:get_elapsed_ms(started_complex))
-         return unpack(out)
-      end
+         local query_class = _classify_query(context, unpack(packed_args, 1, packed_args.n))
+         if profile.urgent_cache_bypass and query_class == 'urgent' then
+            self._instrumentation:inc('perfmod:urgent_bypasses')
+            local started_urgent = self._clock:get_realtime_seconds()
+            local out = { self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n)) }
+            self._instrumentation:observe_query_time(self._clock:get_elapsed_ms(started_urgent))
+            return unpack(out)
+         end
 
-      local prelookup_ms = self._clock:get_elapsed_ms(pipeline_start)
-      if prelookup_ms > profile.query_deadline_ms then
-         self._instrumentation:inc('perfmod:deadline_fallbacks')
-         return self:_fallback_to_original(original_fn, target, filter, ...)
-      end
+         local player_id = target and target.get_player_id and target:get_player_id() or nil
+         local target_key = _target_identity(target)
+         local args_key = _args_signature(unpack(packed_args, 1, packed_args.n))
+         local key = self._cache:make_key(filter, context, player_id, target_key, args_key)
 
-      local now = self._clock:get_realtime_seconds()
-      local cached = self._cache:get(key, context, now, profile.cache_ttl, profile.negative_ttl)
-      if cached then
-         if cached.negative and state.dirty then
-            self._instrumentation:inc('perfmod:dirty_negative_bypasses')
-            cached = nil
-         else
-            if cached.negative then
-               self._instrumentation:inc('perfmod:negative_hits')
+         if not key then
+            self._instrumentation:inc('perfmod:key_bypass_complex')
+            local started_complex = self._clock:get_realtime_seconds()
+            local out = { self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n)) }
+            self._instrumentation:observe_query_time(self._clock:get_elapsed_ms(started_complex))
+            return unpack(out)
+         end
+
+         local prelookup_ms = self._clock:get_elapsed_ms(pipeline_start)
+         if prelookup_ms > profile.query_deadline_ms then
+            self._instrumentation:inc('perfmod:deadline_fallbacks')
+            return self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n))
+         end
+
+         local now = self._clock:get_realtime_seconds()
+         local cached = self._cache:get(key, context, now, profile.cache_ttl, profile.negative_ttl)
+         if cached then
+            if cached.negative and state.dirty then
+               self._instrumentation:inc('perfmod:dirty_negative_bypasses')
+               cached = nil
             else
-               self._instrumentation:inc('perfmod:cache_hits')
+               if cached.negative then
+                  self._instrumentation:inc('perfmod:negative_hits')
+               else
+                  self._instrumentation:inc('perfmod:cache_hits')
+               end
+               return unpack(cached.value)
             end
-            return unpack(cached.value)
          end
-      end
 
-      self._instrumentation:inc('perfmod:cache_misses')
-      if state.dirty and profile.deferred_wait_ms <= 0 then
-         state.dirty = false
-      end
+         self._instrumentation:inc('perfmod:cache_misses')
+         if state.dirty and profile.deferred_wait_ms <= 0 then
+            state.dirty = false
+         end
 
-      local started = self._clock:get_realtime_seconds()
-      local result = { self:_fallback_to_original(original_fn, target, filter, ...) }
-      local elapsed = self._clock:get_elapsed_ms(started)
+         local started = self._clock:get_realtime_seconds()
+         local result = { self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n)) }
+         local elapsed = self._clock:get_elapsed_ms(started)
 
-      if elapsed > profile.query_deadline_ms then
-         self._instrumentation:inc('perfmod:deadline_fallbacks')
-      end
+         if elapsed > profile.query_deadline_ms then
+            self._instrumentation:inc('perfmod:deadline_fallbacks')
+         end
 
-      local is_negative = _is_negative_result(result[1])
-      local result_size = _result_size_hint(result[1])
-      if is_negative and not profile.cache_negative_results then
-         self._instrumentation:inc('perfmod:negative_cache_skips')
-      elseif result_size > profile.max_cached_result_size then
-         self._instrumentation:inc('perfmod:oversized_skips')
-      else
-         local seen_count = self._cache:touch_key(key, profile.max_cache_entries * 2)
-         if seen_count >= profile.admit_after_hits then
-            self._cache:set(key, context, result, now, is_negative, profile.max_cache_entries)
+         local is_negative = _is_negative_result(result[1])
+         local result_size = _result_size_hint(result[1])
+         if is_negative and not profile.cache_negative_results then
+            self._instrumentation:inc('perfmod:negative_cache_skips')
+         elseif result_size > profile.max_cached_result_size then
+            self._instrumentation:inc('perfmod:oversized_skips')
          else
-            self._instrumentation:inc('perfmod:admission_skips')
+            local seen_count = self._cache:touch_key(key, profile.max_cache_entries * 2)
+            if seen_count >= profile.admit_after_hits then
+               self._cache:set(key, context, result, now, is_negative, profile.max_cache_entries)
+            else
+               self._instrumentation:inc('perfmod:admission_skips')
+            end
          end
-      end
 
-      self._instrumentation:observe_query_time(elapsed)
-      return unpack(result)
+         self._instrumentation:observe_query_time(elapsed)
+         return unpack(result)
+      end, original_fn, target, filter, packed_args)
    end
 end
 

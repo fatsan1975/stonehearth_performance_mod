@@ -61,6 +61,8 @@ This mod targets the primary long-tick hotspot seen in perf graphs (`filter_cach
 - `perfmod:urgent_bypasses`
 - `perfmod:key_bypass_complex`
 - `perfmod:negative_cache_skips`
+- `perfmod:safety_fallbacks`
+- `perfmod:circuit_open_bypasses`
 
 ## Patch discovery
 
@@ -70,7 +72,7 @@ When enabled:
 - preloads known ACE/base candidates,
 - scans `package.loaded` for allowlisted module roots (`stonehearth*`, `stonehearth_ace*`),
 - ranks likely hot-path candidates by names/source hints (`filter_cache_cb`, `filter`, `inventory`, `storage`, etc.),
-- hooks only top N candidates per profile.
+- hooks only top N candidates per profile (kept very low for stability).
 
 ## Test plan
 
@@ -114,3 +116,18 @@ To avoid worker-idle stalls under very high item counts, this mod now uses stric
 ## Item visibility safety
 
 To reduce "item exists but not found" reports, negative result caching is disabled by default in all profiles. Positive-result cache still provides the performance win, while negative misses always re-check on the next query.
+
+
+## AI/IPF stability
+
+To reduce AI/IPF spike risk, wrapping scope is narrowed to core matching callback (`filter_cache_cb`) and excludes broader search helpers like `find_best`/`find_items` that can influence pathing and task selection flow more directly.
+
+
+## Safety circuit breaker
+
+If optimizer-side errors repeat in a short time window for the same context, optimization for that context is temporarily opened (bypassed) and all calls fall back to original behavior. This protects simulation/UI stability during unexpected runtime shapes.
+
+
+## Manifest compatibility note
+
+Stonehearth expects `client_init_script` and `server_init_script` to reference Lua scripts. UI JavaScript/HTML are loaded through the `ui` section in `manifest.json`, and remote calls are exposed via the `functions` section.

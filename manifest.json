@@ -2,7 +2,7 @@
   "info" : {
     "name" : "Performance mod for ACE Stonehearth",
     "namespace" : "stonehearth_performance_mod",
-    "version" : 5,
+    "version" : 6,
     "steam_file_id" : ""
   },
   "author": "Fatih1975",
@@ -14,8 +14,23 @@
     "stonehearth_ace"
   ],
   "server_init_script": "file(scripts/server/bootstrap.lua)",
-  "client_init_script": "file(ui/game/modes/mods/perf_mod/perf_mod_settings.js)",
-  "controllers": {
-    "stonehearth_performance_mod:call_handler": "file(scripts/perf_mod/call_handler.lua)"
+  "client_init_script": "file(scripts/client/bootstrap.lua)",
+  "functions": {
+    "stonehearth_performance_mod:get_settings": {
+      "controller": "file(scripts/perf_mod/call_handler.lua)",
+      "endpoint": "server"
+    },
+    "stonehearth_performance_mod:update_settings": {
+      "controller": "file(scripts/perf_mod/call_handler.lua)",
+      "endpoint": "server"
+    }
+  },
+  "ui": {
+    "html": [
+      "file(ui/game/modes/mods/perf_mod/perf_mod_settings.html)"
+    ],
+    "js": [
+      "file(ui/game/modes/mods/perf_mod/perf_mod_settings.js)"
+    ]
   }
 }

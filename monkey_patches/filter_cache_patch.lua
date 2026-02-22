@@ -1,8 +1,6 @@
 local M = {}
 
 local TARGETS = {
-   'stonehearth_ace.ai',
-   'stonehearth.ai',
    'stonehearth_ace.services.server.storage',
    'stonehearth.services.server.storage'
 }

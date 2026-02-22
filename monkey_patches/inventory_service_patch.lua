@@ -5,11 +5,7 @@ local TARGETS = {
    'stonehearth.services.server.inventory.inventory_service'
 }
 
-local METHODS = {
-   'get_items',
-   'get_matching_items',
-   'filter_cache_cb'
-}
+local METHODS = {}
 
 local INVALIDATION_METHODS = {
    'add_item',
