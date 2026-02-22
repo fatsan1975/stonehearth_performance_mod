@@ -28,4 +28,26 @@ function PerfModCallHandler:update_settings(session, response, payload)
    })
 end
 
+
+
+function PerfModCallHandler:set_profile_command(session, response, value)
+   PerfModService:get():update_settings({ profile = value })
+   response:resolve({ ok = true })
+end
+
+function PerfModCallHandler:set_instrumentation_command(session, response, value)
+   PerfModService:get():update_settings({ instrumentation_enabled = value and true or false })
+   response:resolve({ ok = true })
+end
+
+function PerfModCallHandler:set_discovery_command(session, response, value)
+   PerfModService:get():update_settings({ discovery_enabled = value and true or false })
+   response:resolve({ ok = true })
+end
+
+function PerfModCallHandler:set_long_ticks_only_command(session, response, value)
+   PerfModService:get():update_settings({ long_ticks_only = value and true or false })
+   response:resolve({ ok = true })
+end
+
 return PerfModCallHandler

@@ -131,3 +131,8 @@ If optimizer-side errors repeat in a short time window for the same context, opt
 ## Manifest compatibility note
 
 Stonehearth expects `client_init_script` and `server_init_script` to reference Lua scripts. UI JavaScript/HTML are loaded through the `ui` section in `manifest.json`, and remote calls are exposed via the `functions` section.
+
+
+## Gameplay tab integration (ACE)
+
+This mod now injects its settings into ACE gameplay settings via `mixintos` targeting `stonehearth_ace:data:modded_settings`. The settings should appear under the mod section in the Settings > Gameplay panel.

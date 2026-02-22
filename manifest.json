@@ -2,7 +2,7 @@
   "info" : {
     "name" : "Performance mod for ACE Stonehearth",
     "namespace" : "stonehearth_performance_mod",
-    "version" : 6,
+    "version" : 7,
     "steam_file_id" : ""
   },
   "author": "Fatih1975",
@@ -23,6 +23,22 @@
     "stonehearth_performance_mod:update_settings": {
       "controller": "file(scripts/perf_mod/call_handler.lua)",
       "endpoint": "server"
+    },
+    "stonehearth_performance_mod:set_profile_command": {
+      "controller": "file(scripts/perf_mod/call_handler.lua)",
+      "endpoint": "server"
+    },
+    "stonehearth_performance_mod:set_instrumentation_command": {
+      "controller": "file(scripts/perf_mod/call_handler.lua)",
+      "endpoint": "server"
+    },
+    "stonehearth_performance_mod:set_discovery_command": {
+      "controller": "file(scripts/perf_mod/call_handler.lua)",
+      "endpoint": "server"
+    },
+    "stonehearth_performance_mod:set_long_ticks_only_command": {
+      "controller": "file(scripts/perf_mod/call_handler.lua)",
+      "endpoint": "server"
     }
   },
   "ui": {
@@ -32,5 +48,8 @@
     "js": [
       "file(ui/game/modes/mods/perf_mod/perf_mod_settings.js)"
     ]
+  },
+  "mixintos": {
+    "stonehearth_ace:data:modded_settings": "file(data/gameplay_settings/perf_mod_gameplay_settings_mixin.json)"
   }
 }
