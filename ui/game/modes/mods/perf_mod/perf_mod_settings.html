@@ -1,0 +1,19 @@
+<script type="text/x-handlebars" data-template-name="stonehearthPerfModSettings">
+   <div class="perfmod-settings panel">
+      <h2>{{i18n 'stonehearth_performance_mod:ui.settings.title'}}</h2>
+      <p>{{i18n 'stonehearth_performance_mod:ui.settings.description'}}</p>
+
+      <label>{{i18n 'stonehearth_performance_mod:ui.settings.profile'}}</label>
+      <select id="perfmodProfile">
+         <option value="SAFE">{{i18n 'stonehearth_performance_mod:ui.settings.profiles.safe'}}</option>
+         <option value="BALANCED">{{i18n 'stonehearth_performance_mod:ui.settings.profiles.balanced'}}</option>
+         <option value="AGGRESSIVE">{{i18n 'stonehearth_performance_mod:ui.settings.profiles.aggressive'}}</option>
+      </select>
+
+      <label><input type="checkbox" id="perfmodInstrumentation"/> {{i18n 'stonehearth_performance_mod:ui.settings.instrumentation'}}</label>
+      <label><input type="checkbox" id="perfmodDiscovery"/> {{i18n 'stonehearth_performance_mod:ui.settings.discovery'}}</label>
+      <label><input type="checkbox" id="perfmodLongTicks"/> {{i18n 'stonehearth_performance_mod:ui.settings.long_ticks_only'}}</label>
+
+      <button {{action 'saveSettings'}}>{{i18n 'stonehearth_performance_mod:ui.settings.save'}}</button>
+   </div>
+</script>
