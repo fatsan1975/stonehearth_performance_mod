@@ -1,9 +1,10 @@
 {
   "name": "stonehearth_performance_mod",
   "namespace": "stonehearth_performance_mod",
-  "version": "1.0.0",
+  "title": "Stonehearth Performance Boost (ACE Compatible)",
+  "version": "1.4.0",
   "description": "Performance-only optimization layer for filter cache hot paths.",
-  "author": "Codex",
+  "author": "Fatih1975",
   "dependencies": [
     "stonehearth",
     "stonehearth_ace"
