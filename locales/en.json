@@ -1,0 +1,39 @@
+{
+  "stonehearth_performance_mod": {
+    "ui": {
+      "settings": {
+        "title": "Performance Mod",
+        "description": "Performance-focused optimizations for storage/inventory filter-cache hotspots.",
+        "section_title": "Performance Mod",
+        "section_description": "Conservative runtime tuning designed for Stonehearth ACE saves.",
+        "profile": "Optimization profile",
+        "profile_description": "Choose how aggressively the optimizer should cache and coalesce filter queries.",
+        "profiles": {
+          "safe": "Safe",
+          "safe_description": "Lowest risk. Uses very short cache windows and strict fallbacks.",
+          "balanced": "Balanced",
+          "balanced_description": "Recommended. Moderate caching/coalescing with strong safety limits.",
+          "aggressive": "Aggressive",
+          "aggressive_description": "Highest throughput. Larger cache windows with hard safety deadlines."
+        },
+        "instrumentation": "Enable diagnostics",
+        "instrumentation_description": "Publishes internal counters for profiling and troubleshooting.",
+        "discovery": "Enable discovery mode",
+        "discovery_description": "Attempts conservative auto-discovery of additional safe query hook points.",
+        "long_ticks_only": "Long ticks only",
+        "long_ticks_only_description": "When diagnostics are enabled, only record spikes above the long-tick threshold.",
+        "save": "Apply",
+        "performance_preset": "Performance preset",
+        "performance_preset_description": "Quick-start tuning packs for common town sizes and server types.",
+        "presets": {
+          "multiplayer_safe": "Multiplayer safe",
+          "multiplayer_safe_description": "Most conservative for shared servers. Minimizes cache risk and UI/input stalls.",
+          "mega_town_stability": "Mega town stability",
+          "mega_town_stability_description": "Maximum simulation safety for very high hearthling/item counts.",
+          "singleplayer_throughput": "Singleplayer throughput",
+          "singleplayer_throughput_description": "Higher throughput for solo saves while retaining safety fallbacks."
+        }
+      }
+    }
+  }
+}
