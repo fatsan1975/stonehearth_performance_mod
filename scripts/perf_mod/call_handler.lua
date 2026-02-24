@@ -15,23 +15,29 @@ function PerfModCallHandler:update_settings(session, response, payload)
       return
    end
 
-   log:info('Updated settings profile=%s discovery=%s instrumentation=%s',
-      tostring(PerfModService:get():get_settings().profile),
-      tostring(PerfModService:get():get_settings().discovery_enabled),
-      tostring(PerfModService:get():get_settings().instrumentation_enabled)
+   local current = PerfModService:get():get_settings()
+   log:info('Updated settings profile=%s runtime=%s preset=%s discovery=%s instrumentation=%s',
+      tostring(current.profile),
+      tostring(current.runtime_profile),
+      tostring(current.performance_preset),
+      tostring(current.discovery_enabled),
+      tostring(current.instrumentation_enabled)
    )
 
    response:resolve({
       ok = true,
-      settings = PerfModService:get():get_settings(),
+      settings = current,
       counters = PerfModService:get():get_instrumentation_snapshot()
    })
 end
 
-
-
 function PerfModCallHandler:set_profile_command(session, response, value)
    PerfModService:get():update_settings({ profile = value })
+   response:resolve({ ok = true })
+end
+
+function PerfModCallHandler:set_performance_preset_command(session, response, value)
+   PerfModService:get():update_settings({ performance_preset = value })
    response:resolve({ ok = true })
 end
 

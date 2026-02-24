@@ -18,7 +18,14 @@ local COUNTER_NAMES = {
    'perfmod:key_bypass_complex',
    'perfmod:negative_cache_skips',
    'perfmod:safety_fallbacks',
-   'perfmod:circuit_open_bypasses'
+   'perfmod:circuit_open_bypasses',
+   'perfmod:ai_path_bypasses',
+   'perfmod:noisy_signature_bypasses',
+   'perfmod:context_bypasses',
+   'perfmod:warm_resume_guards',
+   'perfmod:auto_profile_downshifts',
+   'perfmod:pump_budget_breaks',
+   'perfmod:health_score'
 }
 
 function Instrumentation:initialize(log)
@@ -34,6 +41,10 @@ end
 
 function Instrumentation:set_enabled(enabled)
    self._enabled = enabled and true or false
+end
+
+function Instrumentation:set_health_score(value)
+   self._counters['perfmod:health_score'] = value or 0
 end
 
 function Instrumentation:inc(name, amount)

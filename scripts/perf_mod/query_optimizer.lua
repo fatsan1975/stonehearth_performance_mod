@@ -28,8 +28,6 @@ function QueryOptimizer:_get_context_state(context)
    return state
 end
 
-
-
 function QueryOptimizer:_get_circuit_state(context)
    local state = self._circuit_state[context]
    if not state then
@@ -119,7 +117,46 @@ local function _args_signature(...)
    return sig
 end
 
-local function _classify_query(context, ...)
+local NOISY_KEYS = {
+   path = true,
+   destination = true,
+   location = true,
+   region = true,
+   search_region = true,
+   nav_grid = true,
+   traversal = true,
+   ai = true,
+   task = true,
+   planner = true
+}
+
+local function _is_noisy_signature(filter, args_signature, noisy_limit)
+   local noisy = 0
+   if type(filter) == 'table' then
+      for k in pairs(filter) do
+         if NOISY_KEYS[k] then
+            noisy = noisy + 1
+         end
+      end
+   end
+
+   if type(args_signature) == 'table' then
+      for i = 1, math.min(args_signature.count or 0, 3) do
+         local v = args_signature[i]
+         if type(v) == 'table' then
+            for k in pairs(v) do
+               if NOISY_KEYS[k] then
+                  noisy = noisy + 1
+               end
+            end
+         end
+      end
+   end
+
+   return noisy >= (noisy_limit or 5)
+end
+
+local function _classify_query(context, filter, ...)
    if context == 'inventory' then
       return 'urgent'
    end
@@ -131,6 +168,13 @@ local function _classify_query(context, ...)
       end
       if first.limit and type(first.limit) == 'number' and first.limit <= 3 then
          return 'urgent'
+      end
+   end
+
+   local f = filter
+   if type(f) == 'table' then
+      if f.path or f.destination or f.region or f.search_region or f.ai or f.task then
+         return 'ai_path'
       end
    end
 
@@ -187,6 +231,17 @@ function QueryOptimizer:wrap_query(context, original_fn)
       local packed_args = { n = select('#', ...), ... }
       local state = self:_get_context_state(context)
       local profile = self:_effective_profile(self._settings:get_profile_data(), state)
+
+      if not self._settings:is_context_cache_enabled(context) then
+        self._instrumentation:inc('perfmod:context_bypasses')
+        return self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n))
+      end
+
+      if self._settings:is_warm_resume_guard_active() then
+         self._instrumentation:inc('perfmod:warm_resume_guards')
+         return self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n))
+      end
+
       local now_for_circuit = self._clock:get_realtime_seconds()
       if self:_is_circuit_open(context, now_for_circuit) then
          self._instrumentation:inc('perfmod:circuit_open_bypasses')
@@ -196,7 +251,7 @@ function QueryOptimizer:wrap_query(context, original_fn)
       return self:_run_safe_optimized(context, profile, function()
          local pipeline_start = self._clock:get_realtime_seconds()
 
-         local query_class = _classify_query(context, unpack(packed_args, 1, packed_args.n))
+         local query_class = _classify_query(context, filter, unpack(packed_args, 1, packed_args.n))
          if profile.urgent_cache_bypass and query_class == 'urgent' then
             self._instrumentation:inc('perfmod:urgent_bypasses')
             local started_urgent = self._clock:get_realtime_seconds()
@@ -205,9 +260,23 @@ function QueryOptimizer:wrap_query(context, original_fn)
             return unpack(out)
          end
 
+         if profile.ai_path_cache_bypass and query_class == 'ai_path' then
+            self._instrumentation:inc('perfmod:ai_path_bypasses')
+            local started_ai = self._clock:get_realtime_seconds()
+            local out = { self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n)) }
+            self._instrumentation:observe_query_time(self._clock:get_elapsed_ms(started_ai))
+            return unpack(out)
+         end
+
          local player_id = target and target.get_player_id and target:get_player_id() or nil
          local target_key = _target_identity(target)
          local args_key = _args_signature(unpack(packed_args, 1, packed_args.n))
+
+         if _is_noisy_signature(filter, args_key, profile.noisy_signature_limit) then
+            self._instrumentation:inc('perfmod:noisy_signature_bypasses')
+            return self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n))
+         end
+
          local key = self._cache:make_key(filter, context, player_id, target_key, args_key)
 
          if not key then

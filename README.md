@@ -12,6 +12,11 @@ This mod targets the primary long-tick hotspot seen in perf graphs (`filter_cach
 - Adds conservative **runtime patch discovery** for ACE/base modules where exact function paths differ.
 - Adds low-overhead **instrumentation counters** to validate improvements.
 - Adds runtime-selectable profiles: **SAFE / BALANCED / AGGRESSIVE**.
+- Adds runtime **performance presets** tuned for Multiplayer Safe / Mega Town Stability / Singleplayer Throughput.
+- Adds adaptive **auto profile downshift** with health scoring under spike conditions.
+- Adds **warm-resume guard** (after long pause/alt-tab) to temporarily bypass optimizer and prevent input lockups.
+- Adds per-context **cache kill-switches** (inventory/storage/filter).
+- Adds stricter **AI/path + noisy signature bypass** so pathfinding/task-shaped queries stay on original behavior.
 
 ## Compatibility and safety
 
@@ -63,6 +68,13 @@ This mod targets the primary long-tick hotspot seen in perf graphs (`filter_cach
 - `perfmod:negative_cache_skips`
 - `perfmod:safety_fallbacks`
 - `perfmod:circuit_open_bypasses`
+- `perfmod:ai_path_bypasses`
+- `perfmod:noisy_signature_bypasses`
+- `perfmod:context_bypasses`
+- `perfmod:warm_resume_guards`
+- `perfmod:auto_profile_downshifts`
+- `perfmod:pump_budget_breaks`
+- `perfmod:health_score`
 
 ## Patch discovery
 
@@ -136,3 +148,21 @@ Stonehearth expects `client_init_script` and `server_init_script` to reference L
 ## Gameplay tab integration (ACE)
 
 This mod now injects its settings into ACE gameplay settings via `mixintos` targeting `stonehearth_ace:data:modded_settings`. The settings should appear under the mod section in the Settings > Gameplay panel.
+
+
+## Localization path note
+
+Stonehearth/ACE localization should live in `locales/<lang>.json` (e.g. `locales/en.json`). If placed elsewhere, Gameplay settings labels can appear as raw i18n keys.
+
+
+## Presets
+
+- **Multiplayer Safe**: strictest defaults, safest for shared servers.
+- **Mega Town Stability**: highest stability, disables riskier filter-context caching.
+- **Singleplayer Throughput**: balanced throughput for solo towns with safeguards.
+
+## Adaptive guardrails
+
+- Runtime health scoring monitors long ticks and safety counters.
+- If health degrades, AGGRESSIVE can downshift to BALANCED/SAFE automatically.
+- After long game-loop stalls (background/menu return), warm-resume guard bypasses optimization briefly.

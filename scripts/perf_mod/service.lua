@@ -51,6 +51,16 @@ function PerfModService:initialize()
    self._discovery = PatchDiscovery()
    self._discovery:initialize(self._optimizer, self, self._instrumentation, log)
 
+   self._runtime_profile_name = nil
+   self._warm_resume_until = 0
+   self._last_pump_at = self._clock:get_realtime_seconds()
+   self._last_health_snapshot = {
+      ['perfmod:deadline_fallbacks'] = 0,
+      ['perfmod:safety_fallbacks'] = 0,
+      ['perfmod:circuit_open_bypasses'] = 0,
+      ['perfmod:long_ticks'] = 0
+   }
+
    self:_detect_ace()
    self:_apply_known_patches()
    self:_wire_best_effort_inventory_events()
@@ -77,19 +87,62 @@ function PerfModService:_wire_best_effort_inventory_events()
    end
 end
 
+function PerfModService:_on_heartbeat_tick()
+   local now = self._clock:get_realtime_seconds()
+   local stall_s = now - (self._last_pump_at or now)
+   self._last_pump_at = now
+
+   if stall_s >= 4 then
+      self._warm_resume_until = now + (self._settings:get().warm_resume_guard_s or 0)
+      self._instrumentation:inc('perfmod:warm_resume_guards')
+   end
+
+   local profile = self:get_profile_data()
+   self._coalescer:set_budget(profile.max_callbacks_per_pump, profile.max_pump_budget_ms)
+   self._coalescer:pump()
+   self._instrumentation:publish_if_available()
+   self:_recompute_health_and_runtime_profile(now)
+end
+
+function PerfModService:_recompute_health_and_runtime_profile(now)
+   local snapshot = self._instrumentation:get_snapshot()
+   local deadlines = (snapshot['perfmod:deadline_fallbacks'] or 0) - (self._last_health_snapshot['perfmod:deadline_fallbacks'] or 0)
+   local safety = (snapshot['perfmod:safety_fallbacks'] or 0) - (self._last_health_snapshot['perfmod:safety_fallbacks'] or 0)
+   local circuits = (snapshot['perfmod:circuit_open_bypasses'] or 0) - (self._last_health_snapshot['perfmod:circuit_open_bypasses'] or 0)
+   local long_ticks = (snapshot['perfmod:long_ticks'] or 0) - (self._last_health_snapshot['perfmod:long_ticks'] or 0)
+
+   local health = math.max(0, 100 - (deadlines * 3) - (safety * 15) - (circuits * 8) - (long_ticks * 5))
+   self._instrumentation:set_health_score(health)
+
+   self._last_health_snapshot = {
+      ['perfmod:deadline_fallbacks'] = snapshot['perfmod:deadline_fallbacks'] or 0,
+      ['perfmod:safety_fallbacks'] = snapshot['perfmod:safety_fallbacks'] or 0,
+      ['perfmod:circuit_open_bypasses'] = snapshot['perfmod:circuit_open_bypasses'] or 0,
+      ['perfmod:long_ticks'] = snapshot['perfmod:long_ticks'] or 0
+   }
+
+   local base_profile = self._settings:get().profile
+   self._runtime_profile_name = nil
+   if self._settings:get().auto_profile_downshift and base_profile == 'AGGRESSIVE' and (health < 75 or safety > 0 or circuits > 0) then
+      self._runtime_profile_name = 'BALANCED'
+      self._instrumentation:inc('perfmod:auto_profile_downshifts')
+   elseif self._settings:get().auto_profile_downshift and base_profile ~= 'SAFE' and (health < 60 or long_ticks > 1) then
+      self._runtime_profile_name = 'SAFE'
+      self._instrumentation:inc('perfmod:auto_profile_downshifts')
+   end
+end
+
 function PerfModService:_start_heartbeat()
    if stonehearth and stonehearth.calendar and stonehearth.calendar.set_interval then
       self._heartbeat = stonehearth.calendar:set_interval('perf_mod_pump', '50ms', function()
-         self._coalescer:pump()
-         self._instrumentation:publish_if_available()
+         self:_on_heartbeat_tick()
       end)
       return
    end
 
    if radiant and radiant.on_game_loop then
       self._heartbeat = radiant.on_game_loop('perf_mod_pump', function()
-         self._coalescer:pump()
-         self._instrumentation:publish_if_available()
+         self:_on_heartbeat_tick()
       end)
       return
    end
@@ -135,15 +188,19 @@ function PerfModService:_run_discovery_if_enabled()
 end
 
 function PerfModService:get_profile_data()
-   return Config.get_profile(self._settings:get().profile)
+   local runtime_name = self._runtime_profile_name or self._settings:get().profile
+   return Config.get_profile(runtime_name)
 end
 
 function PerfModService:get_settings()
-   return self._settings:get()
+   local view = self._settings:get()
+   view.runtime_profile = self._runtime_profile_name or view.profile
+   return view
 end
 
 function PerfModService:update_settings(data)
    if self._settings:update(data) then
+      self._runtime_profile_name = nil
       self._instrumentation:set_enabled(self._settings:get().instrumentation_enabled)
       if data.discovery_enabled then
          self:_run_discovery_if_enabled()
@@ -152,6 +209,14 @@ function PerfModService:update_settings(data)
    end
 
    return false
+end
+
+function PerfModService:is_context_cache_enabled(context)
+   return self._settings:is_context_enabled(context)
+end
+
+function PerfModService:is_warm_resume_guard_active()
+   return self._clock:get_realtime_seconds() < (self._warm_resume_until or 0)
 end
 
 function PerfModService:get_optimizer()

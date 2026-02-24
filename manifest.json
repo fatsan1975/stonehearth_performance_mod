@@ -2,7 +2,7 @@
   "info" : {
     "name" : "Performance mod for ACE Stonehearth",
     "namespace" : "stonehearth_performance_mod",
-    "version" : 7,
+    "version" : 8,
     "steam_file_id" : ""
   },
   "author": "Fatih1975",
@@ -37,6 +37,10 @@
       "endpoint": "server"
     },
     "stonehearth_performance_mod:set_long_ticks_only_command": {
+      "controller": "file(scripts/perf_mod/call_handler.lua)",
+      "endpoint": "server"
+    },
+    "stonehearth_performance_mod:set_performance_preset_command": {
       "controller": "file(scripts/perf_mod/call_handler.lua)",
       "endpoint": "server"
     }

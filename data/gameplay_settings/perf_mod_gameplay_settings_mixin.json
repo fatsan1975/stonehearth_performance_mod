@@ -1,26 +1,55 @@
 {
   "stonehearth_performance_mod": {
+    "display_name": "i18n(stonehearth_performance_mod:ui.settings.section_title)",
+    "description": "i18n(stonehearth_performance_mod:ui.settings.section_description)",
+    "performance_preset": {
+      "type": "list",
+      "display_name": "i18n(stonehearth_performance_mod:ui.settings.performance_preset)",
+      "description": "i18n(stonehearth_performance_mod:ui.settings.performance_preset_description)",
+      "default": "MULTIPLAYER_SAFE",
+      "ordinal": 1,
+      "values": {
+        "MULTIPLAYER_SAFE": {
+          "ordinal": 1,
+          "display_name": "i18n(stonehearth_performance_mod:ui.settings.presets.multiplayer_safe)",
+          "description": "i18n(stonehearth_performance_mod:ui.settings.presets.multiplayer_safe_description)"
+        },
+        "MEGA_TOWN_STABILITY": {
+          "ordinal": 2,
+          "display_name": "i18n(stonehearth_performance_mod:ui.settings.presets.mega_town_stability)",
+          "description": "i18n(stonehearth_performance_mod:ui.settings.presets.mega_town_stability_description)"
+        },
+        "SINGLEPLAYER_THROUGHPUT": {
+          "ordinal": 3,
+          "display_name": "i18n(stonehearth_performance_mod:ui.settings.presets.singleplayer_throughput)",
+          "description": "i18n(stonehearth_performance_mod:ui.settings.presets.singleplayer_throughput_description)"
+        }
+      },
+      "on_change": {
+        "call": "set_performance_preset_command"
+      }
+    },
     "profile": {
       "type": "list",
       "display_name": "i18n(stonehearth_performance_mod:ui.settings.profile)",
-      "description": "i18n(stonehearth_performance_mod:ui.settings.description)",
+      "description": "i18n(stonehearth_performance_mod:ui.settings.profile_description)",
       "default": "SAFE",
-      "ordinal": 1,
+      "ordinal": 2,
       "values": {
         "SAFE": {
           "ordinal": 1,
           "display_name": "i18n(stonehearth_performance_mod:ui.settings.profiles.safe)",
-          "description": "i18n(stonehearth_performance_mod:ui.settings.profiles.safe)"
+          "description": "i18n(stonehearth_performance_mod:ui.settings.profiles.safe_description)"
         },
         "BALANCED": {
           "ordinal": 2,
           "display_name": "i18n(stonehearth_performance_mod:ui.settings.profiles.balanced)",
-          "description": "i18n(stonehearth_performance_mod:ui.settings.profiles.balanced)"
+          "description": "i18n(stonehearth_performance_mod:ui.settings.profiles.balanced_description)"
         },
         "AGGRESSIVE": {
           "ordinal": 3,
           "display_name": "i18n(stonehearth_performance_mod:ui.settings.profiles.aggressive)",
-          "description": "i18n(stonehearth_performance_mod:ui.settings.profiles.aggressive)"
+          "description": "i18n(stonehearth_performance_mod:ui.settings.profiles.aggressive_description)"
         }
       },
       "on_change": {
@@ -30,9 +59,9 @@
     "instrumentation_enabled": {
       "type": "boolean",
       "display_name": "i18n(stonehearth_performance_mod:ui.settings.instrumentation)",
-      "description": "i18n(stonehearth_performance_mod:ui.settings.instrumentation)",
+      "description": "i18n(stonehearth_performance_mod:ui.settings.instrumentation_description)",
       "default": false,
-      "ordinal": 2,
+      "ordinal": 3,
       "on_change": {
         "call": "set_instrumentation_command"
       }
@@ -40,9 +69,9 @@
     "discovery_enabled": {
       "type": "boolean",
       "display_name": "i18n(stonehearth_performance_mod:ui.settings.discovery)",
-      "description": "i18n(stonehearth_performance_mod:ui.settings.discovery)",
+      "description": "i18n(stonehearth_performance_mod:ui.settings.discovery_description)",
       "default": false,
-      "ordinal": 3,
+      "ordinal": 4,
       "on_change": {
         "call": "set_discovery_command"
       }
@@ -50,9 +79,9 @@
     "long_ticks_only": {
       "type": "boolean",
       "display_name": "i18n(stonehearth_performance_mod:ui.settings.long_ticks_only)",
-      "description": "i18n(stonehearth_performance_mod:ui.settings.long_ticks_only)",
+      "description": "i18n(stonehearth_performance_mod:ui.settings.long_ticks_only_description)",
       "default": true,
-      "ordinal": 4,
+      "ordinal": 5,
       "on_change": {
         "call": "set_long_ticks_only_command"
       }

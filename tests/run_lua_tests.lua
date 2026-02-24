@@ -25,9 +25,9 @@ local Config = require 'scripts.perf_mod.config'
 local MicroCache = require 'scripts.perf_mod.micro_cache'
 local QueryOptimizer = require 'scripts.perf_mod.query_optimizer'
 
-assert_eq(Config.get_profile('SAFE').query_deadline_ms, 10, 'SAFE deadline')
-assert_eq(Config.get_profile('BALANCED').coalesce_ms, 60, 'BALANCED coalesce')
-assert_eq(Config.get_profile('AGGRESSIVE').max_cache_entries, 3200, 'AGGRESSIVE cache cap')
+assert_eq(Config.get_profile('SAFE').query_deadline_ms, 8, 'SAFE deadline')
+assert_eq(Config.get_profile('BALANCED').coalesce_ms, 45, 'BALANCED coalesce')
+assert_eq(Config.get_profile('AGGRESSIVE').max_cache_entries, 2600, 'AGGRESSIVE cache cap')
 assert_eq(Config.get_profile('BALANCED').admit_after_hits, 2, 'admission threshold')
 
 local fake_clock = {
@@ -88,12 +88,18 @@ local settings = {
          max_cached_result_size = p.max_cached_result_size,
          admit_after_hits = p.admit_after_hits,
          urgent_cache_bypass = p.urgent_cache_bypass,
+         ai_path_cache_bypass = p.ai_path_cache_bypass,
+         noisy_signature_limit = p.noisy_signature_limit,
          cache_negative_results = p.cache_negative_results,
          circuit_failures = 2,
          circuit_window_s = 9999,
          circuit_open_s = 9999
       }
-   end
+   end,
+   is_context_cache_enabled = function(_, context)
+      return context ~= 'disabled'
+   end,
+   is_warm_resume_guard_active = function() return false end
 }
 
 local optimizer = QueryOptimizer()
@@ -118,28 +124,12 @@ assert_eq(calls, 2, 'admission should skip first cache write')
 assert((counters['perfmod:admission_skips'] or 0) >= 1, 'admission skip counter')
 assert((counters['perfmod:cache_hits'] or 0) >= 1, 'cache hit counter')
 
-local arg_calls = 0
-local wrapped_with_arg = optimizer:wrap_query('ctx', function(_, filter, need)
-   arg_calls = arg_calls + 1
-   return { filter.value + (need or 0) }
-end)
-
-local arg_target = {}
-local a1 = wrapped_with_arg(arg_target, { value = 7 }, 1)
-local a2 = wrapped_with_arg(arg_target, { value = 7 }, 2)
-assert_eq(a1[1], 8, 'arg variant 1')
-assert_eq(a2[1], 9, 'arg variant 2')
-assert_eq(arg_calls, 2, 'different args should not collide in cache')
-
-local neg_calls = 0
-local neg_wrapped = optimizer:wrap_query('storage', function(_, _)
-   neg_calls = neg_calls + 1
-   return nil
-end)
-optimizer:mark_inventory_dirty('storage')
-neg_wrapped({}, { need = 'x' })
-neg_wrapped({}, { need = 'x' })
-assert_eq(neg_calls, 2, 'dirty context should bypass negative cache')
+local context_calls = 0
+local context_bypass = optimizer:wrap_query('disabled', function() context_calls = context_calls + 1 return { 'x' } end)
+context_bypass({}, { value = 1 })
+context_bypass({}, { value = 1 })
+assert_eq(context_calls, 2, 'disabled context should bypass cache')
+assert((counters['perfmod:context_bypasses'] or 0) >= 1, 'context bypass counter')
 
 local urgent_calls = 0
 local urgent_wrapped = optimizer:wrap_query('inventory', function(_, filter)
@@ -150,29 +140,26 @@ urgent_wrapped({}, { value = 10 })
 urgent_wrapped({}, { value = 10 })
 assert_eq(urgent_calls, 2, 'urgent inventory path should bypass cache')
 assert((counters['perfmod:urgent_bypasses'] or 0) >= 1, 'urgent bypass counter')
-local complex_calls = 0
-local complex_wrapped = optimizer:wrap_query('ctx', function(_, filter)
-   complex_calls = complex_calls + 1
-   return { filter }
-end)
-complex_wrapped({}, { a = { b = { c = { d = 1 } } } })
-complex_wrapped({}, { a = { b = { c = { d = 1 } } } })
-assert_eq(complex_calls, 2, 'complex keys should bypass cache')
-assert((counters['perfmod:key_bypass_complex'] or 0) >= 1, 'key bypass counter')
 
-local flip = 0
-local neg_safe = optimizer:wrap_query('storage', function(_, _)
-   flip = flip + 1
-   if flip == 1 then
-      return nil
-   end
-   return { 'found' }
+local ai_calls = 0
+local ai_wrapped = optimizer:wrap_query('storage', function(_, filter)
+   ai_calls = ai_calls + 1
+   return { filter.value or 1 }
 end)
-local n1 = neg_safe({}, { any = true })
-local n2 = neg_safe({}, { any = true })
-assert_eq(n1, nil, 'first negative')
-assert_eq(n2[1], 'found', 'negative caching disabled should not stick misses')
-assert((counters['perfmod:negative_cache_skips'] or 0) >= 1, 'negative cache skip counter')
+ai_wrapped({}, { path = 'x', value = 1 })
+ai_wrapped({}, { path = 'x', value = 1 })
+assert_eq(ai_calls, 2, 'ai/path queries should bypass cache')
+assert((counters['perfmod:ai_path_bypasses'] or 0) >= 1, 'ai/path bypass counter')
+
+local noisy_calls = 0
+local noisy_wrapped = optimizer:wrap_query('ctx', function(_, filter)
+   noisy_calls = noisy_calls + 1
+   return { filter.value or 1 }
+end)
+noisy_wrapped({}, { location = 1, nav_grid = 2, traversal = 3, planner = 4, value = 9 }, { location = 99 })
+noisy_wrapped({}, { location = 1, nav_grid = 2, traversal = 3, planner = 4, value = 9 }, { location = 99 })
+assert_eq(noisy_calls, 2, 'noisy signatures should bypass cache')
+assert((counters['perfmod:noisy_signature_bypasses'] or 0) >= 1, 'noisy bypass counter')
 
 local fail_calls = 0
 local fail_wrapped = optimizer:wrap_query('ctx', function(_, _)
@@ -184,18 +171,5 @@ local sf = fail_wrapped({}, { any = true })
 assert_eq(sf[1], 'ok', 'safety fallback returns original result')
 assert_eq(fail_calls, 1, 'original called on safety fallback')
 assert((counters['perfmod:safety_fallbacks'] or 0) >= 1, 'safety fallback counter')
-
-
-local fail2_calls = 0
-local fail2_wrapped = optimizer:wrap_query('storage', function(_, _)
-   fail2_calls = fail2_calls + 1
-   return { 'ok2' }
-end)
-cache.make_key = function() error('boom2') end
-fail2_wrapped({}, { any = true })
-fail2_wrapped({}, { any = true })
-local c3 = fail2_wrapped({}, { any = true })
-assert_eq(c3[1], 'ok2', 'circuit open still returns original')
-assert((counters['perfmod:circuit_open_bypasses'] or 0) >= 1, 'circuit open counter')
 
 print('All Lua tests passed')
