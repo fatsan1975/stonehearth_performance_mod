@@ -1,7 +1,5 @@
 {
   "stonehearth_performance_mod": {
-    "display_name": "i18n(stonehearth_performance_mod:ui.settings.section_title)",
-    "description": "i18n(stonehearth_performance_mod:ui.settings.section_description)",
     "performance_preset": {
       "type": "list",
       "display_name": "i18n(stonehearth_performance_mod:ui.settings.performance_preset)",
