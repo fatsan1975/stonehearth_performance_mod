@@ -23,10 +23,8 @@ Config.PROFILES = {
       max_pump_budget_ms = 0.8,
       noisy_signature_limit = 4,
       filter_ttl_mult = 1.4,
-      -- Filter context negatif sonuç cache (çok kısa TTL — generation birincil guard)
       cache_negative_filter = true,
       negative_filter_ttl = 0.08,
-      -- Filter context için immediate admission (en tekrarlı context)
       admit_after_hits_filter = 1
    },
    BALANCED = {
@@ -85,7 +83,6 @@ Config.PROFILES = {
 
 Config.DEFAULTS = {
    profile = 'SAFE',
-   -- GC yönetimi: spike'ları küçük adımlara yay (false ile devre dışı bırakılabilir)
    gc_enabled = true,
    gc_pause = 110,
    gc_stepsize = 100,
