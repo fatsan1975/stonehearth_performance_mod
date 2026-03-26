@@ -292,171 +292,198 @@ function QueryOptimizer:_effective_profile(profile, state)
    return profile
 end
 
-function QueryOptimizer:_fallback_to_original(original_fn, target, filter, ...)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Cached Query Execution — named method, closure allocation sıfır
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ESKİ: pcall(function() ... end) → her çağrıda anonymous closure allocation
+-- YENİ: pcall(self._execute_cached_query, self, ...) → metod referansı, sıfır allocation
+--
+-- filter_cache_cb tick başına binlerce kez çağrılabilir.
+-- Closure başına ~40-60 byte + GC object → binlerce closure/tick → ciddi GC baskısı.
+-- Named method ile bu tamamen ortadan kalkar.
+function QueryOptimizer:_execute_cached_query(context, profile, state, original_fn, target, filter, packed_args)
+   local pipeline_start = self._clock:get_realtime_seconds()
+
+   local query_class = _classify_query(context, filter, unpack(packed_args, 1, packed_args.n))
+
+   -- Urgent/AI-path bypass: doğrudan orijinale yönlendir, result table allocation yok
+   -- ESKİ: local out = { original_fn(...) }; return unpack(out) → gereksiz tablo
+   -- YENİ: return original_fn(...) → tail call, tüm return değerleri doğrudan geçer
+   if profile.urgent_cache_bypass and query_class == 'urgent' then
+      self._instrumentation:inc('perfmod:urgent_bypasses')
+      self._instrumentation:inc('perfmod:full_scan_fallbacks')
+      return original_fn(target, filter, unpack(packed_args, 1, packed_args.n))
+   end
+
+   if profile.ai_path_cache_bypass and query_class == 'ai_path' then
+      self._instrumentation:inc('perfmod:ai_path_bypasses')
+      self._instrumentation:inc('perfmod:full_scan_fallbacks')
+      return original_fn(target, filter, unpack(packed_args, 1, packed_args.n))
+   end
+
+   local player_id = target and target.get_player_id and target:get_player_id() or nil
+   local target_key = _target_identity(target)
+   local args_key = _args_signature(unpack(packed_args, 1, packed_args.n))
+
+   if _is_noisy_signature(filter, args_key, profile.noisy_signature_limit) then
+      self._instrumentation:inc('perfmod:noisy_signature_bypasses')
+      self._instrumentation:inc('perfmod:full_scan_fallbacks')
+      return original_fn(target, filter, unpack(packed_args, 1, packed_args.n))
+   end
+
+   local key, fast_key = self._cache:make_key(filter, context, player_id, target_key, args_key)
+   if fast_key then
+      self._instrumentation:inc('perfmod:fast_key_hits')
+   end
+
+   if not key then
+      self._instrumentation:inc('perfmod:key_bypass_complex')
+      self._instrumentation:inc('perfmod:full_scan_fallbacks')
+      return original_fn(target, filter, unpack(packed_args, 1, packed_args.n))
+   end
+
+   -- Tick-local memo: aynı 50ms pencerede özdeş sorgu → sıfır maliyetle servis
+   local cur_gen = self._cache:get_generation(context)
+   local tick_hit = self._tick_results[key]
+   if tick_hit and tick_hit.gen == cur_gen then
+      self._instrumentation:inc('perfmod:tick_cache_hits')
+      return unpack(tick_hit.r)
+   end
+
+   local prelookup_ms = self._clock:get_elapsed_ms(pipeline_start)
+   if prelookup_ms > profile.query_deadline_ms then
+      self._instrumentation:inc('perfmod:deadline_fallbacks')
+      self._instrumentation:inc('perfmod:full_scan_fallbacks')
+      return original_fn(target, filter, unpack(packed_args, 1, packed_args.n))
+   end
+
+   local now = self._clock:get_realtime_seconds()
+   -- Context-aware TTL: filter kriterleri item'lardan daha yavaş değişir → uzun TTL
+   local effective_ttl = profile.cache_ttl
+   if context == 'filter' and profile.filter_ttl_mult then
+      effective_ttl = effective_ttl * profile.filter_ttl_mult
+   end
+   -- Filter context: kısa negatif TTL (80-150ms) → generation guard ile güvenli
+   local neg_ttl = (context == 'filter' and profile.negative_filter_ttl)
+      and profile.negative_filter_ttl
+      or profile.negative_ttl
+   local cached = self._cache:get(key, context, now, effective_ttl, neg_ttl)
+   if cached then
+      if cached.negative and state.dirty then
+         self._instrumentation:inc('perfmod:dirty_negative_bypasses')
+         cached = nil
+      else
+         if cached.negative then
+            self._instrumentation:inc('perfmod:negative_hits')
+         else
+            self._instrumentation:inc('perfmod:cache_hits')
+         end
+         return unpack(cached.value)
+      end
+   end
+
+   self._instrumentation:inc('perfmod:cache_misses')
+   if state.dirty and profile.deferred_wait_ms <= 0 then
+      state.dirty = false
+   end
+
+   -- Cache miss: orijinali çalıştır, sonucu cache'e yaz
+   -- Result table burada GEREKLİ çünkü cache'e yazılacak
+   local started = self._clock:get_realtime_seconds()
    self._instrumentation:inc('perfmod:full_scan_fallbacks')
-   return original_fn(target, filter, ...)
-end
+   local result = { original_fn(target, filter, unpack(packed_args, 1, packed_args.n)) }
+   local elapsed = self._clock:get_elapsed_ms(started)
 
-function QueryOptimizer:_run_safe_optimized(context, profile, fn, original_fn, target, filter, packed_args)
-   local ok, a, b, c, d, e, f = pcall(fn)
-   if ok then
-      return a, b, c, d, e, f
+   if elapsed > profile.query_deadline_ms then
+      self._instrumentation:inc('perfmod:deadline_fallbacks')
    end
 
-   self._instrumentation:inc('perfmod:safety_fallbacks')
-   self:_record_failure(context, profile, self._clock:get_realtime_seconds())
-   if self._log and self._log.warning then
-      self._log:warning('Optimizer safety fallback due to error: %s', tostring(a))
+   local is_negative = _is_negative_result(result[1])
+   local result_size = _result_size_hint(result[1], profile.max_cached_result_size)
+
+   -- Tick memo'ya her zaman yaz (pozitif ve negatif) — generation guard yeterli
+   self._tick_results[key] = { gen = cur_gen, r = result }
+
+   -- Filter context: negatif sonuçlar da cachelenebilir (çok kısa TTL ile güvenli)
+   local cache_neg = profile.cache_negative_results or
+      (context == 'filter' and profile.cache_negative_filter)
+   -- Filter context: immediate admission (en tekrarlı sorgular burada)
+   local admit_threshold = (context == 'filter' and profile.admit_after_hits_filter)
+      and profile.admit_after_hits_filter
+      or profile.admit_after_hits
+
+   if is_negative and not cache_neg then
+      self._instrumentation:inc('perfmod:negative_cache_skips')
+   elseif result_size > profile.max_cached_result_size then
+      self._instrumentation:inc('perfmod:oversized_skips')
+   else
+      local seen_count = self._cache:touch_key(key, profile.max_cache_entries * 2)
+      if seen_count >= admit_threshold then
+         self._cache:set(key, context, result, now, is_negative, profile.max_cache_entries)
+      else
+         self._instrumentation:inc('perfmod:admission_skips')
+      end
    end
-   return self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n))
+
+   self._instrumentation:observe_query_time(elapsed)
+   return unpack(result)
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- wrap_query — optimized: early bypass + closure-free pcall
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 3 temel iyileştirme:
+--   1) Early bypass: context kapalı / warm-resume / circuit-open durumlarında
+--      packed_args tablosu OLUŞTURULMADAN doğrudan orijinal çağrılır (... forwarding)
+--   2) Closure-free pcall: inner logic named method (_execute_cached_query) olarak
+--      tanımlı, pcall(self.method, self, ...) → sıfır closure allocation
+--   3) Bypass path'lerde result table yok: urgent/ai_path/noisy bypass'ları
+--      doğrudan return original_fn(...) ile tail call yapar
 function QueryOptimizer:wrap_query(context, original_fn)
    return function(target, filter, ...)
-      local packed_args = { n = select('#', ...), ... }
-      local state = self:_get_context_state(context)
-      local profile = self:_effective_profile(self._settings:get_profile_data(), state)
-
+      -- ── Early bypass: packed_args allocation'ı ATLA ──────────────────
+      -- Bu 3 kontrol args gerektirmez, doğrudan ... forward eder
       if not self._settings:is_context_cache_enabled(context) then
-        self._instrumentation:inc('perfmod:context_bypasses')
-        return self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n))
+         self._instrumentation:inc('perfmod:context_bypasses')
+         self._instrumentation:inc('perfmod:full_scan_fallbacks')
+         return original_fn(target, filter, ...)
       end
 
       if self._settings:is_warm_resume_guard_active() then
          self._instrumentation:inc('perfmod:warm_resume_guards')
-         return self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n))
+         self._instrumentation:inc('perfmod:full_scan_fallbacks')
+         return original_fn(target, filter, ...)
       end
 
       local now_for_circuit = self._clock:get_realtime_seconds()
       if self:_is_circuit_open(context, now_for_circuit) then
          self._instrumentation:inc('perfmod:circuit_open_bypasses')
-         return self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n))
+         self._instrumentation:inc('perfmod:full_scan_fallbacks')
+         return original_fn(target, filter, ...)
       end
 
-      return self:_run_safe_optimized(context, profile, function()
-         local pipeline_start = self._clock:get_realtime_seconds()
+      -- ── Cache pipeline: packed_args gerekli ─────────────────────────
+      local packed_args = { n = select('#', ...), ... }
+      local state = self:_get_context_state(context)
+      local profile = self:_effective_profile(self._settings:get_profile_data(), state)
 
-         local query_class = _classify_query(context, filter, unpack(packed_args, 1, packed_args.n))
-         if profile.urgent_cache_bypass and query_class == 'urgent' then
-            self._instrumentation:inc('perfmod:urgent_bypasses')
-            local started_urgent = self._clock:get_realtime_seconds()
-            local out = { self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n)) }
-            self._instrumentation:observe_query_time(self._clock:get_elapsed_ms(started_urgent))
-            return unpack(out)
-         end
+      -- pcall(named_method, self, ...) → closure allocation YOK
+      local ok, a, b, c, d, e, f = pcall(
+         self._execute_cached_query, self,
+         context, profile, state, original_fn, target, filter, packed_args)
 
-         if profile.ai_path_cache_bypass and query_class == 'ai_path' then
-            self._instrumentation:inc('perfmod:ai_path_bypasses')
-            local started_ai = self._clock:get_realtime_seconds()
-            local out = { self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n)) }
-            self._instrumentation:observe_query_time(self._clock:get_elapsed_ms(started_ai))
-            return unpack(out)
-         end
+      if ok then
+         return a, b, c, d, e, f
+      end
 
-         local player_id = target and target.get_player_id and target:get_player_id() or nil
-         local target_key = _target_identity(target)
-         local args_key = _args_signature(unpack(packed_args, 1, packed_args.n))
-
-         if _is_noisy_signature(filter, args_key, profile.noisy_signature_limit) then
-            self._instrumentation:inc('perfmod:noisy_signature_bypasses')
-            return self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n))
-         end
-
-         local key, fast_key = self._cache:make_key(filter, context, player_id, target_key, args_key)
-         if fast_key then
-            self._instrumentation:inc('perfmod:fast_key_hits')
-         end
-
-         if not key then
-            self._instrumentation:inc('perfmod:key_bypass_complex')
-            local started_complex = self._clock:get_realtime_seconds()
-            local out = { self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n)) }
-            self._instrumentation:observe_query_time(self._clock:get_elapsed_ms(started_complex))
-            return unpack(out)
-         end
-
-         -- Tick-local memo: aynı 50ms pencerede özdeş sorgu → sıfır maliyetle servis
-         local cur_gen = self._cache:get_generation(context)
-         local tick_hit = self._tick_results[key]
-         if tick_hit and tick_hit.gen == cur_gen then
-            self._instrumentation:inc('perfmod:tick_cache_hits')
-            return unpack(tick_hit.r)
-         end
-
-         local prelookup_ms = self._clock:get_elapsed_ms(pipeline_start)
-         if prelookup_ms > profile.query_deadline_ms then
-            self._instrumentation:inc('perfmod:deadline_fallbacks')
-            return self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n))
-         end
-
-         local now = self._clock:get_realtime_seconds()
-         -- Context-aware TTL: filter kriterleri item'lardan daha yavaş değişir → uzun TTL
-         local effective_ttl = profile.cache_ttl
-         if context == 'filter' and profile.filter_ttl_mult then
-            effective_ttl = effective_ttl * profile.filter_ttl_mult
-         end
-         -- Filter context: kısa negatif TTL (80-150ms) → generation guard ile güvenli
-         local neg_ttl = (context == 'filter' and profile.negative_filter_ttl)
-            and profile.negative_filter_ttl
-            or profile.negative_ttl
-         local cached = self._cache:get(key, context, now, effective_ttl, neg_ttl)
-         if cached then
-            if cached.negative and state.dirty then
-               self._instrumentation:inc('perfmod:dirty_negative_bypasses')
-               cached = nil
-            else
-               if cached.negative then
-                  self._instrumentation:inc('perfmod:negative_hits')
-               else
-                  self._instrumentation:inc('perfmod:cache_hits')
-               end
-               return unpack(cached.value)
-            end
-         end
-
-         self._instrumentation:inc('perfmod:cache_misses')
-         if state.dirty and profile.deferred_wait_ms <= 0 then
-            state.dirty = false
-         end
-
-         local started = self._clock:get_realtime_seconds()
-         local result = { self:_fallback_to_original(original_fn, target, filter, unpack(packed_args, 1, packed_args.n)) }
-         local elapsed = self._clock:get_elapsed_ms(started)
-
-         if elapsed > profile.query_deadline_ms then
-            self._instrumentation:inc('perfmod:deadline_fallbacks')
-         end
-
-         local is_negative = _is_negative_result(result[1])
-         local result_size = _result_size_hint(result[1], profile.max_cached_result_size)
-
-         -- Tick memo'ya her zaman yaz (pozitif ve negatif) — generation guard yeterli
-         self._tick_results[key] = { gen = cur_gen, r = result }
-
-         -- Filter context: negatif sonuçlar da cachelenebilir (çok kısa TTL ile güvenli)
-         local cache_neg = profile.cache_negative_results or
-            (context == 'filter' and profile.cache_negative_filter)
-         -- Filter context: immediate admission (en tekrarlı sorgular burada)
-         local admit_threshold = (context == 'filter' and profile.admit_after_hits_filter)
-            and profile.admit_after_hits_filter
-            or profile.admit_after_hits
-
-         if is_negative and not cache_neg then
-            self._instrumentation:inc('perfmod:negative_cache_skips')
-         elseif result_size > profile.max_cached_result_size then
-            self._instrumentation:inc('perfmod:oversized_skips')
-         else
-            local seen_count = self._cache:touch_key(key, profile.max_cache_entries * 2)
-            if seen_count >= admit_threshold then
-               self._cache:set(key, context, result, now, is_negative, profile.max_cache_entries)
-            else
-               self._instrumentation:inc('perfmod:admission_skips')
-            end
-         end
-
-         self._instrumentation:observe_query_time(elapsed)
-         return unpack(result)
-      end, original_fn, target, filter, packed_args)
+      -- Safety fallback: _execute_cached_query hata verdi
+      self._instrumentation:inc('perfmod:safety_fallbacks')
+      self:_record_failure(context, profile, self._clock:get_realtime_seconds())
+      if self._log and self._log.warning then
+         self._log:warning('Optimizer safety fallback due to error: %s', tostring(a))
+      end
+      self._instrumentation:inc('perfmod:full_scan_fallbacks')
+      return original_fn(target, filter, unpack(packed_args, 1, packed_args.n))
    end
 end
 
