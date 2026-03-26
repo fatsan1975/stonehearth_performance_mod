@@ -3,9 +3,6 @@ local MicroCache = class()
 local MAX_HASH_DEPTH = 3
 local MAX_HASH_KEYS = 24
 
--- filter_cache_cb çoğunlukla ek args olmadan çağrılır → _stable_hash({count=0}) sonucu sabittir.
--- Bu sabit string'i precompute edip hash hesaplamayı tamamen atlarız (~%90 query için geçerli).
--- _stable_hash({count=0}): key='count'→'s:count', val=0→'0' → '{s:count=0}'
 local _EMPTY_ARGS_HASH = '{s:count=0}'
 
 local function _clear_table(t)
@@ -14,9 +11,6 @@ local function _clear_table(t)
    end
 end
 
--- ≤4 scalar key içeren basit filter'lar için fast path.
--- scratch.keys ve scratch.chunks reuse edilir — GC allocation yok.
--- Aynı filter = aynı key garantisi (deterministic sort + type prefix).
 local function _fast_hash_or_nil(filter, scratch)
    local keys = scratch.keys
    _clear_table(keys)
@@ -138,13 +132,10 @@ function MicroCache:get_generation(context)
    return self._generation[context] or 0
 end
 
--- Döner: key (string veya nil), fast_path (bool)
--- fast_path=true → filter basitti, _fast_hash_or_nil kullanıldı
 function MicroCache:make_key(filter, context, player_id, region_key, extra_key)
    local filter_hash
    local fast_path = false
 
-   -- Fast path: ≤4 scalar key olan basit filter'larda _stable_hash atlanır
    if type(filter) == 'table' then
       local fast = _fast_hash_or_nil(filter, self._scratch)
       if fast then
@@ -163,7 +154,6 @@ function MicroCache:make_key(filter, context, player_id, region_key, extra_key)
       end
    end
 
-   -- extra_key (args_signature): boş args için sabit hash kullan — ~%90 oranında geçerli
    local extra_hash
    if type(extra_key) == 'table' and (extra_key.count == 0 or extra_key.n == 0) then
       extra_hash = _EMPTY_ARGS_HASH
@@ -246,7 +236,6 @@ function MicroCache:set(key, context, value, now, is_negative, max_entries)
 end
 
 function MicroCache:_prune_approx_oldest(remove_count)
-   -- Phase 1: nesil-geçersiz (stale generation) girdileri önce sil — sıfır risk
    local removed = 0
    for key, entry in pairs(self._entries) do
       if entry.generation ~= self:get_generation(entry.context) then
@@ -259,11 +248,9 @@ function MicroCache:_prune_approx_oldest(remove_count)
       end
    end
 
-   -- Phase 2: en eski girdileri sil — tek geçişte topla+sırala → O(N log N), O(N²) değil
    local need = remove_count - removed
    if need <= 0 then return end
 
-   -- (time, key) çiftlerini topla; en fazla 512 entry tara (büyük cache'lerde bile hızlı)
    local candidates = {}
    local scanned = 0
    for key, entry in pairs(self._entries) do
@@ -274,7 +261,6 @@ function MicroCache:_prune_approx_oldest(remove_count)
 
    if #candidates == 0 then return end
 
-   -- Zamana göre artan sırala → en eski önce
    table.sort(candidates, function(a, b) return a.t < b.t end)
 
    for i = 1, math.min(need, #candidates) do

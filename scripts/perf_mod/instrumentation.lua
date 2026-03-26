@@ -34,7 +34,16 @@ local COUNTER_NAMES = {
    'perfmod:restock_coalesces',
    'perfmod:town_score_coalesces',
    'perfmod:population_coalesces',
-   'perfmod:workshop_coalesces'
+   'perfmod:workshop_coalesces',
+   'perfmod:events_prune_skips',
+   'perfmod:gc_adaptive_steps',
+   'perfmod:gc_spike_skips',
+   'perfmod:gc_post_spike_boosts',
+   'perfmod:debug_log_guards',
+   'perfmod:counter_cache_hits',
+   'perfmod:storage_fullness_cache_hits',
+   'perfmod:reconsider_dedup_hits',
+   'perfmod:reconsider_snapshot_reuses'
 }
 
 function Instrumentation:initialize(log)
@@ -56,7 +65,6 @@ function Instrumentation:set_health_score(value)
    self._counters['perfmod:health_score'] = value or 0
 end
 
--- Enabled flag'i bypass eder — her zaman yazar (gauge/snapshot değerleri için)
 function Instrumentation:set(name, value)
    self._counters[name] = value or 0
 end
@@ -65,7 +73,6 @@ function Instrumentation:inc(name, amount)
    if not self._enabled then
       return
    end
-
    self._counters[name] = (self._counters[name] or 0) + (amount or 1)
 end
 
@@ -73,7 +80,6 @@ function Instrumentation:observe_query_time(ms)
    if not self._enabled then
       return
    end
-
    self._rolling_samples = self._rolling_samples + 1
    self._rolling_avg = self._rolling_avg + (ms - self._rolling_avg) / self._rolling_samples
    self._counters['perfmod:avg_query_ms'] = self._rolling_avg
@@ -91,7 +97,6 @@ function Instrumentation:publish_if_available()
    if not self._enabled then
       return
    end
-
    if stonehearth and stonehearth.perf_mon and stonehearth.perf_mon.set_counter then
       for name, value in pairs(self._counters) do
          stonehearth.perf_mon:set_counter(name, value)

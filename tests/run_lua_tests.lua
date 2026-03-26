@@ -120,7 +120,6 @@ end)
 local target = {}
 local r1 = wrapped(target, { value = 5 })
 assert_eq(r1[1], 5, 'first result')
--- Tick memo'yu temizle: admission kontrolü tick memo olmadan test edilmeli
 optimizer:flush_tick_results()
 local r2 = wrapped(target, { value = 5 })
 assert_eq(r2[1], 5, 'second result')
@@ -168,7 +167,6 @@ noisy_wrapped({}, { location = 1, nav_grid = 2, traversal = 3, planner = 4, valu
 assert_eq(noisy_calls, 2, 'noisy signatures should bypass cache')
 assert((counters['perfmod:noisy_signature_bypasses'] or 0) >= 1, 'noisy bypass counter')
 
--- Step 2B: _classify_query — task_group filter → ai_path bypass
 local task_cls_calls = 0
 local ai_path_before = counters['perfmod:ai_path_bypasses'] or 0
 local task_cls_wrapped = optimizer:wrap_query('storage', function(_, filter)
@@ -180,7 +178,6 @@ task_cls_wrapped({}, { task_group = 'wg1', value = 7 })
 assert_eq(task_cls_calls, 2, 'task_group filter should bypass cache')
 assert((counters['perfmod:ai_path_bypasses'] or 0) > ai_path_before, 'task_group should trigger ai_path bypass')
 
--- Step 2B: _classify_query — worker filter → ai_path bypass
 task_cls_calls = 0
 ai_path_before = counters['perfmod:ai_path_bypasses'] or 0
 task_cls_wrapped({}, { worker = 'hw1', value = 8 })
@@ -188,10 +185,6 @@ task_cls_wrapped({}, { worker = 'hw1', value = 8 })
 assert_eq(task_cls_calls, 2, 'worker filter should bypass cache')
 assert((counters['perfmod:ai_path_bypasses'] or 0) > ai_path_before, 'worker key should trigger ai_path bypass')
 
--- Step 2B: expanded NOISY_KEYS (yeni canlı nesne anahtarları, _classify_query'e takılmayan)
--- worker_filter, job_filter, location, nav_grid, traversal = 5 >= BALANCED limit(5)
--- NOT: compound_action ve execution_frame artık _classify_query'de → ai_path bypass'ına takılır;
---      location/planner/worker_filter/job_filter NOISY ama _classify_query'de YOK → noisy path'e girer
 local noisy2_calls = 0
 local noisy2_before = counters['perfmod:noisy_signature_bypasses'] or 0
 local noisy2_wrapped = optimizer:wrap_query('ctx', function(_, filter)
@@ -203,7 +196,6 @@ noisy2_wrapped({}, { worker_filter = 1, job_filter = 2, location = 3, nav_grid =
 assert_eq(noisy2_calls, 2, 'expanded noisy keys should bypass cache')
 assert((counters['perfmod:noisy_signature_bypasses'] or 0) > noisy2_before, 'new NOISY_KEYS should trigger noisy bypass')
 
--- Step 2A: visited tablo reuse — ardışık make_key çağrıları tutarlı key üretmeli
 local cache2 = MicroCache(fake_clock)
 cache2:initialize(fake_clock)
 local f_wood  = { type = 'wood',  qty = 5 }
@@ -216,7 +208,6 @@ assert_eq(rv_k1,  rv_k1b, 'visited reuse: f_wood key stable across calls')
 assert_eq(rv_k2,  rv_k2b, 'visited reuse: f_stone key stable across calls')
 assert(rv_k1 ~= rv_k2,    'visited reuse: different filters must produce different keys')
 
--- Step 3: Tick-local memo — aynı tick'te özdeş sorgu orijinali çağırmamalı
 local tick_calls = 0
 local tick_wrapped = optimizer:wrap_query('storage', function(_, filter)
    tick_calls = tick_calls + 1
@@ -224,46 +215,41 @@ local tick_wrapped = optimizer:wrap_query('storage', function(_, filter)
 end)
 optimizer:flush_tick_results()
 local tick_before = counters['perfmod:tick_cache_hits'] or 0
-local tick_target = {}  -- aynı target objesi: tostring() sabit key üretir
-tick_wrapped(tick_target, { x = 42 })       -- tick miss + original çağrısı
-tick_wrapped(tick_target, { x = 42 })       -- tick HIT → original çağrılmamalı
+local tick_target = {}
+tick_wrapped(tick_target, { x = 42 })
+tick_wrapped(tick_target, { x = 42 })
 assert_eq(tick_calls, 1, 'tick memo should serve second call without calling original')
 assert((counters['perfmod:tick_cache_hits'] or 0) > tick_before, 'tick_cache_hits counter')
-optimizer:flush_tick_results()     -- temizle: sonraki testleri etkilemesin
+optimizer:flush_tick_results()
 
--- Step 3: Fast-path key — basit filter'larda fast_key_hits sayacı artmalı
 local fast_before = counters['perfmod:fast_key_hits'] or 0
 local fast_wrapped = optimizer:wrap_query('filter', function(_, filter)
    return { filter.mat }
 end)
 optimizer:flush_tick_results()
-fast_wrapped({}, { mat = 'wood' })  -- basit 1-key filter → fast path
+fast_wrapped({}, { mat = 'wood' })
 assert((counters['perfmod:fast_key_hits'] or 0) > fast_before, 'fast_key_hits counter for simple filter')
 optimizer:flush_tick_results()
 
--- Değişiklik 1: Filter context negatif sonuç cache
--- admit_after_hits_filter=1 + cache_negative_filter=true → ilk nil sonucu da cachele
 local neg_filter_calls = 0
 local neg_filter_wrapped = optimizer:wrap_query('filter', function(_, _)
    neg_filter_calls = neg_filter_calls + 1
-   return nil  -- negatif sonuç
+   return nil
 end)
 optimizer:flush_tick_results()
 local neg_hits_before = counters['perfmod:negative_hits'] or 0
-local neg_target = {}  -- aynı target: tostring() sabit key üretir
-neg_filter_wrapped(neg_target, { mat = 'stone' })   -- call 1: miss → original, cache'e yaz (admit=1)
+local neg_target = {}
+neg_filter_wrapped(neg_target, { mat = 'stone' })
 optimizer:flush_tick_results()
-neg_filter_wrapped(neg_target, { mat = 'stone' })   -- call 2: negative_hits artmalı
+neg_filter_wrapped(neg_target, { mat = 'stone' })
 assert((counters['perfmod:negative_hits'] or 0) > neg_hits_before, 'filter negative should be cached')
 assert_eq(neg_filter_calls, 1, 'second call must not reach original (negative cache hit)')
 optimizer:flush_tick_results()
 
--- Değişiklik 4: mark_task_dirty — burst dedupe
 local task_gen_before = cache:get_generation('filter')
 optimizer:mark_task_dirty('filter')
 local task_gen_after = cache:get_generation('filter')
 assert(task_gen_after > task_gen_before, 'first mark_task_dirty must invalidate generation')
--- İkinci çağrı aynı pencerede: task_inval_pending=true → generation tekrar artmamalı
 optimizer:mark_task_dirty('filter')
 assert_eq(cache:get_generation('filter'), task_gen_after, 'rapid mark_task_dirty must be deduplicated')
 
@@ -278,11 +264,6 @@ assert_eq(sf[1], 'ok', 'safety fallback returns original result')
 assert_eq(fail_calls, 1, 'original called on safety fallback')
 assert((counters['perfmod:safety_fallbacks'] or 0) >= 1, 'safety fallback counter')
 
--- ============================================================
--- Step 4: Burst-dedupe throttle mekanizması (restock/town/population patch'leri)
--- ============================================================
-
--- args_signature scratch test için: query_optimizer'daki module-level scratch ile aynı mantık
 local _test_args_scratch = {}
 local _test_args_scratch_prev_max = 0
 local function _args_signature_test(...)
@@ -299,7 +280,6 @@ local function _args_signature_test(...)
    return _test_args_scratch
 end
 
--- Throttle yardımcısı — patch dosyalarındaki _make_throttled ile aynı mantık
 local unpack_fn = table.unpack or unpack
 local function make_throttled_test(fn, get_now, instrumentation, counter_name, suppress_s)
    local last_call   = {}
@@ -328,7 +308,6 @@ local function make_throttled_test(fn, get_now, instrumentation, counter_name, s
    end
 end
 
--- Step 4 test 1: İlk çağrı çalışır, pencere içindeki tekrar suppress edilir
 local throttle_time = 0
 local throttle_get_now = function() return throttle_time end
 local throttle_calls = 0
@@ -338,38 +317,31 @@ local throttle_fn    = make_throttled_test(
    throttle_get_now, instrumentation, 'perfmod:restock_coalesces', 0.1)
 
 local tcoalesce_before = counters['perfmod:restock_coalesces'] or 0
-throttle_time = 1.0   -- >0 başlangıç: (1.0 - 0) >= 0.1 → suppress değil
-local tv1 = throttle_fn(throttle_obj, 5)   -- çağrı 1: çalışır, returns 10
+throttle_time = 1.0
+local tv1 = throttle_fn(throttle_obj, 5)
 assert_eq(tv1, 10, 'throttle: first call must return original result')
 assert_eq(throttle_calls, 1, 'throttle: first call must invoke original')
 
-throttle_time = 1.05  -- 50ms geçti, henüz pencere içinde (0.1s)
-local tv2 = throttle_fn(throttle_obj, 5)   -- suppress: 10 döner (stale OK)
+throttle_time = 1.05
+local tv2 = throttle_fn(throttle_obj, 5)
 assert_eq(tv2, 10, 'throttle: suppressed call must return last result (not nil)')
 assert_eq(throttle_calls, 1, 'throttle: suppressed call must NOT invoke original')
-assert((counters['perfmod:restock_coalesces'] or 0) > tcoalesce_before,
-   'throttle: suppress counter must increment')
+assert((counters['perfmod:restock_coalesces'] or 0) > tcoalesce_before, 'throttle: suppress counter must increment')
 
-throttle_time = 1.11  -- pencere doldu
-local tv3 = throttle_fn(throttle_obj, 7)   -- çalışır, returns 14
+throttle_time = 1.11
+local tv3 = throttle_fn(throttle_obj, 7)
 assert_eq(tv3, 14, 'throttle: after window expiry must call original again')
 assert_eq(throttle_calls, 2, 'throttle: second real call must invoke original')
 
--- Step 4 test 2: GC config değerleri mevcut
 assert_eq(Config.DEFAULTS.gc_enabled, true, 'gc_enabled default must be true')
 assert(type(Config.DEFAULTS.gc_pause) == 'number', 'gc_pause must be number')
 assert(type(Config.DEFAULTS.gc_stepsize) == 'number', 'gc_stepsize must be number')
 assert(Config.DEFAULTS.gc_pause < 200, 'gc_pause must be lower than Lua default 200')
 
--- Step 4 test 3: Yeni counterlar kullanıldı (throttle testi esnasında inc edildi)
--- counters tablosu mock instrumentation'ın kayıt defteri
 assert(counters['perfmod:restock_coalesces']   ~= nil, 'restock_coalesces counter used')
-assert(counters['perfmod:town_score_coalesces'] == nil or true, 'town_score_coalesces optional (town patch not active in test)')
+assert(counters['perfmod:town_score_coalesces'] == nil or true, 'town_score_coalesces optional')
 assert(counters['perfmod:population_coalesces'] == nil or true, 'population_coalesces optional')
 
--- ============================================================
--- Step 5: Workshop throttle mekanizması
--- ============================================================
 local ws_time   = 1.0
 local ws_calls  = 0
 local ws_obj    = {}
@@ -379,37 +351,27 @@ local ws_fn     = make_throttled_test(
    instrumentation, 'perfmod:workshop_coalesces', 0.2)
 
 local ws_coal_before = counters['perfmod:workshop_coalesces'] or 0
-local wv1 = ws_fn(ws_obj, 5)    -- çağrı 1: çalışır → 105
+local wv1 = ws_fn(ws_obj, 5)
 assert_eq(wv1, 105, 'workshop throttle: first call must return original result')
 assert_eq(ws_calls, 1, 'workshop throttle: first call must invoke original')
 
-ws_time = 1.10  -- 100ms geçti, henüz 200ms pencere içinde
-local wv2 = ws_fn(ws_obj, 5)   -- suppress: 105 döner
+ws_time = 1.10
+local wv2 = ws_fn(ws_obj, 5)
 assert_eq(wv2, 105, 'workshop throttle: suppressed call must return cached result')
 assert_eq(ws_calls, 1, 'workshop throttle: suppressed call must NOT invoke original')
-assert((counters['perfmod:workshop_coalesces'] or 0) > ws_coal_before,
-   'workshop throttle: suppress counter must increment')
+assert((counters['perfmod:workshop_coalesces'] or 0) > ws_coal_before, 'workshop throttle: suppress counter must increment')
 
-ws_time = 1.21  -- pencere doldu (>200ms)
-local wv3 = ws_fn(ws_obj, 7)   -- çalışır → 107
+ws_time = 1.21
+local wv3 = ws_fn(ws_obj, 7)
 assert_eq(wv3, 107, 'workshop throttle: after window expiry must call original again')
 assert_eq(ws_calls, 2, 'workshop throttle: second real call must invoke original')
 
--- ============================================================
--- Step 5: args_scratch reuse — aynı scratch tablo döner, allocation yok
--- ============================================================
 local sig1 = _args_signature_test('a', 'b')
 local sig2 = _args_signature_test('x', 'y')
--- rawequal: aynı tablo objesi mi? (allocation yok → aynı scratch)
 assert(rawequal(sig1, sig2), 'args_signature must reuse scratch table (no allocation)')
 assert_eq(sig2.count, 2, 'args_signature scratch: count must reflect current call')
 assert_eq(sig2[1], 'x', 'args_signature scratch: [1] must be overwritten')
 
--- ============================================================
--- Step 5: empty args fast path — n=0 için sabit hash kullanılır
--- ============================================================
--- make_key'in extra_hash hesaplamayı atladığını doğrudan test edemeyiz
--- ama empty args ile key üretilebilmeli (nil dönmemeli)
 local empty_args_target = {}
 optimizer:flush_tick_results()
 local empty_calls = 0
@@ -418,28 +380,18 @@ local empty_wrapped = optimizer:wrap_query('storage', function(_, _)
    return 'empty_ok'
 end)
 empty_wrapped(empty_args_target, { item_type = 'wood' })
-empty_wrapped(empty_args_target, { item_type = 'wood' })  -- cache hit bekliyoruz
+empty_wrapped(empty_args_target, { item_type = 'wood' })
 assert(empty_calls <= 2, 'empty args fast path: key must be generated correctly')
 
--- ============================================================
--- Memory leak önleme testleri
--- ============================================================
-
--- Test 1: flush_tick_results tam tablo değişimi — Lua eski hash slot'larını GC'ye verir
 optimizer:flush_tick_results()
-local old_tick_table = optimizer._tick_results  -- referans tut (pre-flush)
--- bir şey yaz
+local old_tick_table = optimizer._tick_results
 local mem_target = {}
 local mem_wrapped = optimizer:wrap_query('storage', function(_, _) return 'v' end)
 mem_wrapped(mem_target, { x = 1 })
--- şimdi flush: YENİ tablo yaratılmalı
 optimizer:flush_tick_results()
 local new_tick_table = optimizer._tick_results
-assert(not rawequal(old_tick_table, new_tick_table),
-   'flush_tick_results must replace table (not nil-out) for GC recovery')
+assert(not rawequal(old_tick_table, new_tick_table), 'flush_tick_results must replace table (not nil-out) for GC recovery')
 
--- Test 2: prune_stale_states — dinamik context'leri temizle
--- Saati 300s'ye taşı: dirty_since=0 ile (300-0)>120 → prune tetiklenir
 local clock_saved = fake_clock.now
 fake_clock.now = 300
 
@@ -452,29 +404,24 @@ optimizer._context_state[dyn_ctx] = {
 }
 optimizer:prune_stale_states()
 fake_clock.now = clock_saved
-assert(optimizer._context_state[dyn_ctx] == nil,
-   'prune_stale_states must remove idle dynamic contexts')
+assert(optimizer._context_state[dyn_ctx] == nil, 'prune_stale_states must remove idle dynamic contexts')
 
--- Temel context'ler korunmalı
 assert(optimizer._context_state['storage']   ~= nil, 'prune must keep storage context')
 assert(optimizer._context_state['filter']    ~= nil, 'prune must keep filter context')
 assert(optimizer._context_state['inventory'] ~= nil, 'prune must keep inventory context')
 
--- Test 3: prune_stale_states — aktif context silinmemeli
 local active_ctx = 'storage:active_test'
 local clock_save2 = fake_clock.now
 fake_clock.now = 300
 optimizer._context_state[active_ctx] = {
-   dirty = true,    -- aktif: dirty=true → silinmemeli
+   dirty = true,
    dirty_since = 0,
    maintenance_scheduled = false,
    task_inval_pending = false
 }
 optimizer:prune_stale_states()
 fake_clock.now = clock_save2
-assert(optimizer._context_state[active_ctx] ~= nil,
-   'prune_stale_states must NOT remove dirty contexts')
--- temizlik
+assert(optimizer._context_state[active_ctx] ~= nil, 'prune_stale_states must NOT remove dirty contexts')
 optimizer._context_state[active_ctx] = nil
 
 print('All Lua tests passed')

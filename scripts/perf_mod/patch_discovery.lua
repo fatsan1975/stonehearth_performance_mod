@@ -32,13 +32,11 @@ local function _contains_any(text, strings)
    if type(text) ~= 'string' then
       return false
    end
-
    for _, needle in ipairs(strings) do
       if string.find(text, needle, 1, true) then
          return true
       end
    end
-
    return false
 end
 
@@ -58,7 +56,6 @@ local function _upvalue_hint(fn)
    end
    return false
 end
-
 
 local function _infer_context(module_name, key)
    local hay = (tostring(module_name) .. ':' .. tostring(key)):lower()
@@ -99,7 +96,6 @@ function PatchDiscovery:run()
       if hooked >= max_hooks then
          break
       end
-
       if self:_hook_candidate(candidate) then
          hooked = hooked + 1
       end
