@@ -8,6 +8,8 @@ local Coalescer = require 'scripts.perf_mod.coalescer'
 local Instrumentation = require 'scripts.perf_mod.instrumentation'
 local QueryOptimizer = require 'scripts.perf_mod.query_optimizer'
 local PatchDiscovery = require 'scripts.perf_mod.patch_discovery'
+local GcOptimization = require 'monkey_patches.gc_optimization_patch'
+local ReconsiderOptimization = require 'monkey_patches.reconsider_optimization_patch'
 
 local PerfModService = class()
 
@@ -65,6 +67,8 @@ function PerfModService:initialize()
 
    self:_detect_ace()
    self:_apply_known_patches()
+   self:_apply_phase1_patches()
+   self:_apply_phase2_patches()
    self:_wire_best_effort_inventory_events()
    self:_run_discovery_if_enabled()
    self:_apply_gc_tuning()
@@ -72,7 +76,6 @@ function PerfModService:initialize()
 end
 
 function PerfModService:_wire_best_effort_inventory_events()
-   -- Eski listener varsa önce temizle (yeniden başlatma / save reload durumunda sızıntı önleme)
    if self._listeners and self._listeners.inventory_changed then
       pcall(function()
          local l = self._listeners.inventory_changed
@@ -99,8 +102,6 @@ function PerfModService:_wire_best_effort_inventory_events()
    end
 end
 
--- Servis destroy edildiğinde (save/load, mod unload) listener'ları temizle.
--- Eksik destroy → closure capture yüzünden service GC edilemez.
 function PerfModService:destroy()
    if self._listeners then
       for _, listener in pairs(self._listeners) do
@@ -127,12 +128,20 @@ function PerfModService:_on_heartbeat_tick()
    local stall_s = now - (self._last_pump_at or now)
    self._last_pump_at = now
 
-   -- Tick-local memo temizle: her 50ms'de bir yeni pencere başlar
    self._optimizer:flush_tick_results()
 
-   -- GC mini adımı: her iki tick'te bir küçük GC işi yap → spike yerine düzgün dağılım
-   if (self._heartbeat_count or 0) % 2 == 0 and Config.DEFAULTS.gc_enabled ~= false then
-      pcall(collectgarbage, 'step', 0)
+   pcall(ReconsiderOptimization.flush_tick)
+
+   if Config.DEFAULTS.gc_enabled ~= false then
+      local gc_ok = pcall(function()
+         local profile_name = self._runtime_profile_name or self._settings:get().profile
+         GcOptimization.adaptive_gc_step(self._clock, profile_name)
+      end)
+      if not gc_ok then
+         if (self._heartbeat_count or 0) % 2 == 0 then
+            pcall(collectgarbage, 'step', 0)
+         end
+      end
    end
 
    if stall_s >= 4 then
@@ -144,25 +153,22 @@ function PerfModService:_on_heartbeat_tick()
    self._coalescer:set_budget(profile.max_callbacks_per_pump, profile.max_pump_budget_ms)
    self._coalescer:pump()
 
-   -- Cache entry sayısını gauge olarak güncelle (her tick — overhead yok)
    self._instrumentation:set('perfmod:cache_entry_count', self._cache._entry_count)
+
+   pcall(ReconsiderOptimization.publish_stats)
 
    self._instrumentation:publish_if_available()
    self:_recompute_health_and_runtime_profile(now)
 
-   -- Heartbeat kendi overhead'ini izle (>5ms → perf_mod'un kendisi yük yaratıyor)
    if self._clock:get_elapsed_ms(tick_start) > 5 then
       self._instrumentation:inc('perfmod:heavy_heartbeats')
    end
 
-   -- Her ~60s'de bir: ölü context/circuit state'leri temizle (bellek sızıntısı önleme)
-   -- Dinamik key'ler ('storage:task_inval_reset' vb.) birikmeden budanır.
    self._heartbeat_count = (self._heartbeat_count or 0) + 1
    if self._heartbeat_count % 1200 == 0 then
       self._optimizer:prune_stale_states()
    end
 
-   -- Her ~30s'de bir özet log (instrumentation açık olsun ya da olmasın)
    if self._heartbeat_count % 600 == 0 then
       local snap = self._instrumentation:get_snapshot()
       local hits   = snap['perfmod:cache_hits'] or 0
@@ -186,8 +192,6 @@ function PerfModService:_recompute_health_and_runtime_profile(now)
    local circuits   = (snapshot['perfmod:circuit_open_bypasses'] or 0) - (self._last_health_snapshot['perfmod:circuit_open_bypasses'] or 0)
    local long_ticks = (snapshot['perfmod:long_ticks'] or 0)            - (self._last_health_snapshot['perfmod:long_ticks'] or 0)
 
-   -- EMA smoothing: ani lag spike'larinda profil salınımını önler
-   -- safety/circuit eventleri için immediate_danger flag'i EMA'yı bypass eder
    local raw_health = math.max(0, 100 - (deadlines * 3) - (safety * 15) - (circuits * 8) - (long_ticks * 5))
    local alpha = Config.DEFAULTS.health_ema_alpha or 0.05
    self._health_ema = alpha * raw_health + (1 - alpha) * (self._health_ema or 100)
@@ -201,7 +205,6 @@ function PerfModService:_recompute_health_and_runtime_profile(now)
       ['perfmod:long_ticks']            = snapshot['perfmod:long_ticks'] or 0
    }
 
-   -- safety/circuit: anlık downshift (simülasyon hatası → EMA bekleme yok)
    local immediate_danger = (safety > 0 or circuits > 0)
    local settings = self._settings:get()
    local base_profile = settings.profile
@@ -217,17 +220,14 @@ function PerfModService:_recompute_health_and_runtime_profile(now)
    end
 
    if would_downshift then
-      -- Downshift her zaman anlık: daha kötüye gidebilir, gecikme kabul edilemez
       if would_downshift ~= self._runtime_profile_name then
          self._instrumentation:inc('perfmod:auto_profile_downshifts')
       end
       self._runtime_profile_name = would_downshift
       self._downshift_until = now + (Config.DEFAULTS.health_upshift_min_s or 20)
    elseif now >= (self._downshift_until or 0) then
-      -- Upshift: ancak hysteresis süresi dolduktan sonra
       self._runtime_profile_name = nil
    end
-   -- Downshift penceresi aktif + trigger yok → mevcut downshift korun
 end
 
 function PerfModService:_start_heartbeat()
@@ -248,23 +248,30 @@ function PerfModService:_start_heartbeat()
    log:warning('No heartbeat scheduler available; coalescer/perf publishing will run only on query access')
 end
 
--- LuaJIT GC spike'larını önlemek için GC parametrelerini ayarla.
--- pause=110: bellek %110'a ulaşınca başlat (default 200 → büyük spike).
--- setstepsize=100: küçük adımlar, daha sık ama daha kısa GC duraklamaları.
--- Heartbeat'te step(0): GC işini tick'lere eşit dağıt.
 function PerfModService:_apply_gc_tuning()
    local cfg = Config.DEFAULTS
    if cfg.gc_enabled == false then
       return
    end
-   local ok = pcall(function()
-      collectgarbage('setpause',    cfg.gc_pause    or 110)
-      collectgarbage('setstepsize', cfg.gc_stepsize or 100)
-   end)
-   if ok then
-      log:info('perf_mod: GC tuning applied (pause=%d stepsize=%d)',
-         cfg.gc_pause or 110, cfg.gc_stepsize or 100)
+
+   local profile_name = self._settings:get().profile or 'SAFE'
+   local ok_gc = pcall(GcOptimization.apply_gc_params, profile_name)
+
+   if not ok_gc then
+      local ok = pcall(function()
+         collectgarbage('setpause',    cfg.gc_pause    or 110)
+         collectgarbage('setstepsize', cfg.gc_stepsize or 100)
+      end)
+      if ok then
+         log:info('perf_mod: GC tuning applied (fallback, pause=%d stepsize=%d)',
+            cfg.gc_pause or 110, cfg.gc_stepsize or 100)
+      end
+   else
+      log:info('perf_mod: Adaptive GC tuning applied (profile=%s)', profile_name)
    end
+
+   pcall(GcOptimization.set_instrumentation, self._instrumentation)
+   pcall(GcOptimization.apply, self)
 end
 
 function PerfModService:get_clock()
@@ -284,7 +291,6 @@ function PerfModService:_apply_known_patches()
    local candidates = {
       'monkey_patches.storage_service_patch',
       'monkey_patches.inventory_service_patch',
-      'monkey_patches.filter_cache_patch',
       'monkey_patches.task_service_patch',
       'monkey_patches.restock_patch',
       'monkey_patches.town_population_patch',
@@ -300,6 +306,50 @@ function PerfModService:_apply_known_patches()
             self._applied_patch_points[#self._applied_patch_points + 1] = path
             log:info('Applied known patch: %s', path)
          end
+      end
+   end
+end
+
+function PerfModService:_apply_phase1_patches()
+   local phase1_patches = {
+      'monkey_patches.events_optimization_patch',
+      'monkey_patches.counter_optimization_patch',
+      'monkey_patches.debug_string_patch',
+   }
+
+   for _, path in ipairs(phase1_patches) do
+      local ok, patch_module = pcall(require, path)
+      if ok and patch_module and patch_module.apply then
+         local ok2, applied = pcall(patch_module.apply, self)
+         if ok2 and applied then
+            self._applied_patch_points[#self._applied_patch_points + 1] = path
+            log:info('Applied phase-1 patch: %s', path)
+         elseif not ok2 then
+            log:warning('Phase-1 patch failed: %s - %s', path, tostring(applied))
+         end
+      elseif not ok then
+         log:warning('Phase-1 patch load failed: %s - %s', path, tostring(patch_module))
+      end
+   end
+end
+
+function PerfModService:_apply_phase2_patches()
+   local phase2_patches = {
+      'monkey_patches.reconsider_optimization_patch',
+   }
+
+   for _, path in ipairs(phase2_patches) do
+      local ok, patch_module = pcall(require, path)
+      if ok and patch_module and patch_module.apply then
+         local ok2, applied = pcall(patch_module.apply, self)
+         if ok2 and applied then
+            self._applied_patch_points[#self._applied_patch_points + 1] = path
+            log:info('Applied phase-2 patch: %s', path)
+         elseif not ok2 then
+            log:warning('Phase-2 patch failed: %s - %s', path, tostring(applied))
+         end
+      elseif not ok then
+         log:warning('Phase-2 patch load failed: %s - %s', path, tostring(patch_module))
       end
    end
 end
