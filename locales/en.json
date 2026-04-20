@@ -2,42 +2,17 @@
   "ui": {
     "settings": {
       "title": "Performance Mod",
-      "description": "CPU optimizations for storage and filter hotspots. Safe for singleplayer and multiplayer ACE saves.",
-      "section_title": "Performance Mod",
-      "section_description": "Conservative runtime tuning designed for Stonehearth ACE saves.",
-
-      "performance_preset": "Performance Preset",
-      "performance_preset_description": "Quick-start profile packs. Pick one and the mod tunes itself automatically.",
+      "description": "Surgical CPU optimizations targeting allocation reduction and filter cache efficiency. Safe for all ACE saves.",
 
       "profile": "Optimization Profile",
-      "profile_description": "Controls how aggressively the mod caches and coalesces filter queries. Safe is recommended for most players.",
 
       "profiles": {
-        "safe": "Safe (Default)",
-        "safe_description": "Shortest cache windows, strictest fallbacks. Best starting point — nearly zero risk.",
-        "balanced": "Balanced",
-        "balanced_description": "Moderate caching with strong safety limits. Good for mid-to-late game towns.",
-        "aggressive": "Aggressive",
-        "aggressive_description": "Largest cache windows for maximum throughput. Use for big towns; monitor for issues."
-      },
-
-      "presets": {
-        "multiplayer_safe": "Multiplayer Safe",
-        "multiplayer_safe_description": "Most conservative settings for shared servers. Minimizes any risk of desync or stalls.",
-        "mega_town_stability": "Mega Town Stability",
-        "mega_town_stability_description": "Maximum simulation stability for very large towns (30+ hearthlings, many items).",
-        "singleplayer_throughput": "Singleplayer Throughput",
-        "singleplayer_throughput_description": "Higher throughput for solo saves. Faster tick processing with safety fallbacks active."
+        "safe": "Safe",
+        "balanced": "Balanced (Default)",
+        "aggressive": "Aggressive"
       },
 
       "instrumentation": "Enable Diagnostics",
-      "instrumentation_description": "Publishes performance counters (cache hits, coalesces, health score) to the game profiler. Off by default — only needed for troubleshooting.",
-
-      "discovery": "Enable Discovery Mode",
-      "discovery_description": "Attempts to automatically find and hook additional filter-shaped functions. Off by default — leave off unless advised.",
-
-      "long_ticks_only": "Long Ticks Only",
-      "long_ticks_only_description": "When diagnostics are on, only log frames that exceed the long-tick threshold. Reduces log noise.",
 
       "save": "Apply"
     }

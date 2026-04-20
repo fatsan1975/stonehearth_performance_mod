@@ -1,20 +1,20 @@
 {
   "info" : {
-    "name" : "Performance mod for ACE Stonehearth",
+    "name" : "Performance Mod for ACE Stonehearth",
     "namespace" : "stonehearth_performance_mod",
     "version" : 3,
-    "mod_version" : 210,
-    "steam_file_id" : "3669297036"
+    "mod_version" : 310,
+    "steam_file_id" : ""
   },
   "author": "Fatih1975",
-  "description": "CPU-focused micro-cache and safe coalescing for ACE 0.9.6 filter-heavy item queries and lua_gc.",
+  "description": "Surgical performance optimizations for ACE Stonehearth: allocation elimination, URI-based filter fast-reject, reconsider cascade limiter, and adaptive GC tuning.",
   "default_locale": "en",
   "dependencies": [
     "stonehearth",
     "stonehearth_ace"
   ],
-  "server_init_script": "file(scripts/server/bootstrap.lua)",
-  "client_init_script": "file(scripts/client/bootstrap.lua)",
+  "server_init_script": "file(stonehearth_performance_mod_server)",
+  "client_init_script": "file(stonehearth_performance_mod_client)",
   "functions": {
     "stonehearth_performance_mod:get_settings": {
       "controller": "file(scripts/perf_mod/call_handler.lua)",
@@ -29,18 +29,6 @@
       "endpoint": "server"
     },
     "stonehearth_performance_mod:set_instrumentation_command": {
-      "controller": "file(scripts/perf_mod/call_handler.lua)",
-      "endpoint": "server"
-    },
-    "stonehearth_performance_mod:set_discovery_command": {
-      "controller": "file(scripts/perf_mod/call_handler.lua)",
-      "endpoint": "server"
-    },
-    "stonehearth_performance_mod:set_long_ticks_only_command": {
-      "controller": "file(scripts/perf_mod/call_handler.lua)",
-      "endpoint": "server"
-    },
-    "stonehearth_performance_mod:set_performance_preset_command": {
       "controller": "file(scripts/perf_mod/call_handler.lua)",
       "endpoint": "server"
     }

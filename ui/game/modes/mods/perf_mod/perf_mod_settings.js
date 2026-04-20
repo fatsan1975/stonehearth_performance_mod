@@ -13,11 +13,8 @@
       actions: {
          saveSettings: function () {
             const payload = {
-               performance_preset:      this.$('#perfmodPreset').val(),
                profile:                 this.$('#perfmodProfile').val(),
-               instrumentation_enabled: this.$('#perfmodInstrumentation').is(':checked'),
-               discovery_enabled:       this.$('#perfmodDiscovery').is(':checked'),
-               long_ticks_only:         this.$('#perfmodLongTicks').is(':checked')
+               instrumentation_enabled: this.$('#perfmodInstrumentation').is(':checked')
             };
 
             radiant.call(MOD_CALL_UPDATE, payload)
@@ -39,11 +36,8 @@
       _applyToUI: function (settings) {
          if (!settings) { return; }
          this.set('settings', settings);
-         this.$('#perfmodPreset').val(settings.performance_preset || 'MULTIPLAYER_SAFE');
-         this.$('#perfmodProfile').val(settings.profile || 'SAFE');
+         this.$('#perfmodProfile').val(settings.profile || 'BALANCED');
          this.$('#perfmodInstrumentation').prop('checked', !!settings.instrumentation_enabled);
-         this.$('#perfmodDiscovery').prop('checked',       !!settings.discovery_enabled);
-         this.$('#perfmodLongTicks').prop('checked',       settings.long_ticks_only !== false);
       }
    });
 })();
