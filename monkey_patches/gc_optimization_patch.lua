@@ -1,150 +1,139 @@
 -- gc_optimization_patch.lua
--- Lua Garbage Collection iyileştirmeleri.
+-- GC tuning ? sadele?tirilmi? versiyon
+--
+-- Hedefler:
+--   1) object_tracker.lua'daki collectgarbage() ? incremental step'e ?evir
+--   2) Adaptif GC step: frame y?k?ne g?re boyut ayarla
+--   3) Post-spike boost: uzun tick sonras? ekstra GC
+--   4) Profil bazl? GC parametreleri
+--
+-- NOT: Bu patch allocation AZALDIKTAN SONRA etkili olur.
+--   PATCH 1-3 allocation'? d???r?r ? GC tuning daha az i? yapar ? kazan?.
+
+local log = radiant.log.create_logger('perf_mod:gc')
 
 local M = {}
 
-local GC_PROFILES = {
-   SAFE = {
-      gc_pause = 120,
-      gc_stepsize = 80,
-      heartbeat_step = 0,
-      post_spike_steps = 1,
-      spike_threshold_ms = 80,
-   },
-   BALANCED = {
-      gc_pause = 110,
-      gc_stepsize = 100,
-      heartbeat_step = 0,
-      post_spike_steps = 2,
-      spike_threshold_ms = 60,
-   },
-   AGGRESSIVE = {
-      gc_pause = 105,
-      gc_stepsize = 120,
-      heartbeat_step = 0,
-      post_spike_steps = 3,
-      spike_threshold_ms = 50,
-   }
-}
+local _patched = false
+local _instrumentation = nil
 
+-- Frame timing
+local _last_heartbeat = nil
+local _was_spiking = false
+local _consecutive_spikes = 0
+
+-- ??? Object Tracker collectgarbage() Throttle ????????????????????????????
 local function _patch_object_tracker()
-   local ok, result = pcall(function()
-      local tracker = nil
-      for name, mod in pairs(package.loaded) do
-         if type(name) == 'string' and name:find('object_tracker') then
-            if type(mod) == 'table' and type(mod.get_count) == 'function' then
-               tracker = mod
-               break
-            end
+   local tracker = nil
+   for name, mod in pairs(package.loaded) do
+      if type(name) == 'string' and name:find('object_tracker') then
+         if type(mod) == 'table' and type(mod.get_count) == 'function' then
+            tracker = mod
+            break
          end
       end
+   end
 
-      if not tracker then return false end
-      if tracker._perfmod_gc_patched then return false end
+   if not tracker then return false end
+   if tracker._perfmod_gc_patched then return false end
 
-      local original_get_count = tracker.get_count
-      tracker.get_count = function(category)
-         pcall(collectgarbage, 'step', 5)
-         return original_get_count(category)
+   local original_get_count = tracker.get_count
+   local real_collectgarbage = collectgarbage
+
+   tracker.get_count = function(category)
+      local saved = collectgarbage
+      collectgarbage = function(cmd, ...)
+         if cmd == nil or cmd == 'collect' then
+            return real_collectgarbage('step', 5)
+         end
+         return real_collectgarbage(cmd, ...)
       end
+      local success, ret = pcall(original_get_count, category)
+      collectgarbage = saved
+      if success then return ret end
+      error(ret)
+   end
 
-      tracker._perfmod_gc_patched = true
-      return true
-   end)
-
-   return ok and result
+   tracker._perfmod_gc_patched = true
+   return true
 end
 
-local _last_frame_ms = 0
-local _consecutive_spikes = 0
-local _was_spiking = false
+-- ??? Adaptif GC Step ?????????????????????????????????????????????????????
+function M.adaptive_gc_step(profile)
+   local now = os.clock()
+   local frame_ms = 0
 
-function M.get_adaptive_step_size(frame_ms, profile_name)
-   local profile = GC_PROFILES[profile_name] or GC_PROFILES.SAFE
-   _last_frame_ms = frame_ms
+   if _last_heartbeat then
+      frame_ms = (now - _last_heartbeat) * 1000
+   end
+   _last_heartbeat = now
 
-   if frame_ms > profile.spike_threshold_ms then
+   local spike_threshold = profile.spike_threshold_ms or 80
+
+   if frame_ms > spike_threshold then
       _consecutive_spikes = _consecutive_spikes + 1
       _was_spiking = true
-      return -1
+      if _instrumentation then _instrumentation:inc('perfmod:gc_spike_skips') end
+      return  -- CPU zaten yo?un, GC step yapma
    end
 
+   -- Normal frame: GC step yap
    _consecutive_spikes = 0
-
+   local step_size = 0
    if frame_ms < 20 then
-      return 2
+      step_size = 2
    elseif frame_ms < 40 then
-      return 1
-   else
-      return 0
-   end
-end
-
-function M.should_post_spike_boost(profile_name)
-   if not _was_spiking then
-      return false, 0
+      step_size = 1
    end
 
-   if _consecutive_spikes > 0 then
-      return false, 0
-   end
+   pcall(collectgarbage, 'step', step_size)
+   if _instrumentation then _instrumentation:inc('perfmod:gc_adaptive_steps') end
 
-   _was_spiking = false
-   local profile = GC_PROFILES[profile_name] or GC_PROFILES.SAFE
-   local steps = profile.post_spike_steps
-   return steps > 0, steps
-end
-
-function M.apply_gc_params(profile_name)
-   local profile = GC_PROFILES[profile_name] or GC_PROFILES.SAFE
-   pcall(collectgarbage, 'setpause', profile.gc_pause)
-   pcall(collectgarbage, 'setstepsize', profile.gc_stepsize)
-end
-
-function M.apply(service)
-   local patched = false
-
-   local ok1 = pcall(_patch_object_tracker)
-   if ok1 then patched = true end
-
-   local profile_name = 'SAFE'
-   pcall(function()
-      profile_name = service:get_settings().profile or 'SAFE'
-   end)
-   M.apply_gc_params(profile_name)
-
-   return patched
-end
-
-M._instrumentation = nil
-
-function M.set_instrumentation(inst)
-   M._instrumentation = inst
-end
-
-function M.adaptive_gc_step(clock, profile_name)
-   local now = clock:get_realtime_seconds()
-
-   local frame_ms = clock:get_elapsed_ms(M._last_heartbeat or now)
-   M._last_heartbeat = now
-
-   local step_size = M.get_adaptive_step_size(frame_ms, profile_name)
-   local inst = M._instrumentation
-
-   if step_size >= 0 then
-      pcall(collectgarbage, 'step', step_size)
-      if inst then inst:inc('perfmod:gc_adaptive_steps') end
-   else
-      if inst then inst:inc('perfmod:gc_spike_skips') end
-   end
-
-   local should_boost, boost_steps = M.should_post_spike_boost(profile_name)
-   if should_boost and boost_steps > 0 then
+   -- Post-spike boost
+   if _was_spiking then
+      _was_spiking = false
+      local boost_steps = profile.post_spike_steps or 1
       for _ = 1, boost_steps do
          pcall(collectgarbage, 'step', 1)
       end
-      if inst then inst:inc('perfmod:gc_post_spike_boosts') end
+      if _instrumentation then _instrumentation:inc('perfmod:gc_post_spike_boosts') end
    end
 end
+
+-- ??? GC Parametreleri Uygula ?????????????????????????????????????????????
+function M.apply_gc_params(profile)
+   pcall(collectgarbage, 'setpause', profile.gc_pause or 110)
+   pcall(collectgarbage, 'setstepsize', profile.gc_stepsize or 100)
+end
+
+-- ??? Apply / Restore ?????????????????????????????????????????????????????
+function M.apply(config)
+   if _patched then
+      return true
+   end
+
+   if config then
+      _instrumentation = config.instrumentation
+   end
+
+   -- Object tracker throttle
+   local ok = pcall(_patch_object_tracker)
+
+   _patched = true
+   log:info('GC optimization applied (object_tracker_patched=%s)', tostring(ok))
+   return true
+end
+
+function M.set_instrumentation(inst)
+   _instrumentation = inst
+end
+
+function M.is_patched()
+   return _patched
+end
+
+-- Global registration (Stonehearth require return degerini iletmiyor)
+_G.perf_mod_patches = _G.perf_mod_patches or {}
+_G.perf_mod_patches.gc_optimization = M
 
 return M

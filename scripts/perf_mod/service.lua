@@ -1,19 +1,26 @@
+-- service.lua
+-- Performance Mod ana servis
+--
+-- Tum patch modulleri initialize() icinde require edilir (lazy loading).
+-- Bootstrap radiant:init event'inde bu modulu yukler, bu zamanda
+-- class(), stonehearth.ai, ACE patch'leri hepsi hazirdir.
+
 local log = radiant.log.create_logger('perf_mod_service')
 
+-- Config pure table, class() kullanmiyor ? top-level safe
 local Config = require 'scripts.perf_mod.config'
-local Settings = require 'scripts.perf_mod.settings'
-local Clock = require 'scripts.perf_mod.clock'
-local MicroCache = require 'scripts.perf_mod.micro_cache'
-local Coalescer = require 'scripts.perf_mod.coalescer'
-local Instrumentation = require 'scripts.perf_mod.instrumentation'
-local QueryOptimizer = require 'scripts.perf_mod.query_optimizer'
-local PatchDiscovery = require 'scripts.perf_mod.patch_discovery'
-local GcOptimization = require 'monkey_patches.gc_optimization_patch'
-local ReconsiderOptimization = require 'monkey_patches.reconsider_optimization_patch'
 
 local PerfModService = class()
 
 local _instance = nil
+
+-- Lazy-loaded moduller (initialize icinde require edilir)
+local Settings = nil
+local Instrumentation = nil
+local ReconsiderAllocPatch = nil
+local FilterFastRejectPatch = nil
+local ReconsiderLimiterPatch = nil
+local GcOptimization = nil
 
 local function _fallback_saved_variables()
    local data = {}
@@ -32,86 +39,279 @@ function PerfModService:get()
 end
 
 function PerfModService:initialize()
+   -- 1) Lazy module loading ? hepsi pcall ile korunuyor
+   local modules_ok = self:_load_modules()
+   if not modules_ok then
+      log:error('perf_mod: Critical modules failed to load ? aborting')
+      return
+   end
+
+   -- 2) Settings
    self._sv = self.__saved_variables or _fallback_saved_variables()
    self._settings = Settings()
    self._settings:initialize(self._sv)
 
-   self._clock = Clock()
+   -- 3) Instrumentation
    self._instrumentation = Instrumentation()
    self._instrumentation:initialize(log)
    self._instrumentation:set_enabled(self._settings:get().instrumentation_enabled)
 
-   self._cache = MicroCache()
-   self._cache:initialize(self._clock)
+   -- 4) ACE kontrolu
+   self:_detect_ace()
 
-   self._coalescer = Coalescer()
-   self._coalescer:initialize(self._clock, log, self._instrumentation)
+   -- 5) stonehearth.ai hazirlik kontrolu + patch uygulama
+   self._applied_patches = {}
+   if self:_check_ai_service_ready() then
+      self:_apply_patches()
+      self:_apply_gc_tuning()
+      self:_start_heartbeat()
+      self:_log_startup_summary()
+   else
+      log:warning('perf_mod: stonehearth.ai not ready at init ? deferring patch application...')
+      self:_defer_patch_application()
+   end
+end
 
-   self._optimizer = QueryOptimizer()
-   self._optimizer:initialize(self._clock, self._cache, self._coalescer, self._instrumentation, self, log)
+-- ??? Module Loading ??????????????????????????????????????????????????????
 
-   self._discovery = PatchDiscovery()
-   self._discovery:initialize(self._optimizer, self, self._instrumentation, log)
+function PerfModService:_load_modules()
+   local all_ok = true
 
-   self._runtime_profile_name = nil
-   self._warm_resume_until = 0
-   self._health_ema = 100
-   self._downshift_until = 0
-   self._last_pump_at = self._clock:get_realtime_seconds()
-   self._last_health_snapshot = {
-      ['perfmod:deadline_fallbacks'] = 0,
-      ['perfmod:safety_fallbacks'] = 0,
-      ['perfmod:circuit_open_bypasses'] = 0,
-      ['perfmod:long_ticks'] = 0
+   -- Settings (class-based)
+   local ok1, r1 = pcall(require, 'scripts.perf_mod.settings')
+   if ok1 then Settings = r1
+   else log:error('perf_mod: settings load failed: %s', tostring(r1)); all_ok = false end
+
+   -- Instrumentation (class-based)
+   local ok2, r2 = pcall(require, 'scripts.perf_mod.instrumentation')
+   if ok2 then Instrumentation = r2
+   else log:error('perf_mod: instrumentation load failed: %s', tostring(r2)); all_ok = false end
+
+   -- Patch modules (table-based, class() kullanmiyor)
+   local ok3, r3 = pcall(require, 'monkey_patches.reconsider_alloc_patch')
+   if ok3 then ReconsiderAllocPatch = r3
+   else log:warning('perf_mod: reconsider_alloc_patch load failed: %s', tostring(r3)) end
+
+   local ok4, r4 = pcall(require, 'monkey_patches.filter_fast_reject_patch')
+   if ok4 then FilterFastRejectPatch = r4
+   else log:warning('perf_mod: filter_fast_reject_patch load failed: %s', tostring(r4)) end
+
+   local ok5, r5 = pcall(require, 'monkey_patches.reconsider_limiter_patch')
+   if ok5 then ReconsiderLimiterPatch = r5
+   else log:warning('perf_mod: reconsider_limiter_patch load failed: %s', tostring(r5)) end
+
+   local ok6, r6 = pcall(require, 'monkey_patches.gc_optimization_patch')
+   if ok6 then GcOptimization = r6
+   else log:warning('perf_mod: gc_optimization_patch load failed: %s', tostring(r6)) end
+
+   return all_ok
+end
+
+-- ??? stonehearth.ai Readiness ????????????????????????????????????????????
+
+function PerfModService:_check_ai_service_ready()
+   if not stonehearth then return false end
+   if not stonehearth.ai then return false end
+   -- ACE'nin reconsider_entity override'i uygulandi mi?
+   if not stonehearth.ai.reconsider_entity then return false end
+   if not stonehearth.ai._call_reconsider_callbacks then return false end
+   if not stonehearth.ai._add_reconsidered_entity then return false end
+   return true
+end
+
+function PerfModService:_defer_patch_application()
+   -- Kisa bir timer ile tekrar dene ? stonehearth.ai birka? ms icinde hazir olacak
+   local retry_count = 0
+   local max_retries = 50  -- 50 ? 100ms = 5 saniye max bekleme
+
+   local function _try_apply()
+      retry_count = retry_count + 1
+
+      if self:_check_ai_service_ready() then
+         log:always('perf_mod: stonehearth.ai ready after %d retries ? applying patches', retry_count)
+         self:_apply_patches()
+         self:_apply_gc_tuning()
+         self:_start_heartbeat()
+         self:_log_startup_summary()
+         return
+      end
+
+      if retry_count < max_retries then
+         -- radiant.set_realtime_timer kullan (game loop'a bagli degil)
+         if radiant and radiant.set_realtime_timer then
+            radiant.set_realtime_timer('perf_mod_retry_' .. retry_count, 100, _try_apply)
+         else
+            log:error('perf_mod: Cannot retry ? radiant.set_realtime_timer not available')
+         end
+      else
+         log:error('perf_mod: stonehearth.ai not ready after %d retries ? patches NOT applied', max_retries)
+         -- Heartbeat'i yine baslat (GC tuning icin)
+         self:_apply_gc_tuning()
+         self:_start_heartbeat()
+         self:_log_startup_summary()
+      end
+   end
+
+   _try_apply()
+end
+
+-- ??? ACE Detection ???????????????????????????????????????????????????????
+
+function PerfModService:_detect_ace()
+   self._ace_present = false
+   if radiant and radiant.mods and radiant.mods.is_installed then
+      self._ace_present = radiant.mods.is_installed('stonehearth_ace')
+   end
+end
+
+-- ??? Patch Application ??????????????????????????????????????????????????
+
+function PerfModService:_apply_patches()
+   local profile = self:get_profile_data()
+   local patch_config = {
+      instrumentation = self._instrumentation,
+      max_reconsider_per_tick = profile.max_reconsider_per_tick,
+      reject_flush_interval = profile.reject_flush_interval,
    }
 
-   self:_detect_ace()
-   self:_apply_known_patches()
-   self:_apply_phase1_patches()
-   self:_apply_phase2_patches()
-   self:_wire_best_effort_inventory_events()
-   self:_run_discovery_if_enabled()
-   self:_apply_gc_tuning()
-   self:_start_heartbeat()
-end
+   -- Uygulama sirasi onemli:
+   -- PATCH 3 (reconsider_limiter) -> reconsider_entity'yi override eder
+   -- PATCH 2 (filter_fast_reject) -> _add_reconsidered_entity + filter_from_key
+   -- PATCH 1 (reconsider_alloc)   -> _call_reconsider_callbacks + on_reconsider_entity
+   -- Bu sira ile her patch kendi katmaninda calisir, cakisma olmaz.
 
-function PerfModService:_wire_best_effort_inventory_events()
-   if self._listeners and self._listeners.inventory_changed then
-      pcall(function()
-         local l = self._listeners.inventory_changed
-         if l and type(l.destroy) == 'function' then l:destroy() end
-      end)
-      self._listeners.inventory_changed = nil
-   end
-
-   self._listeners = self._listeners or {}
-   local ok, err = pcall(function()
-      if stonehearth and stonehearth.inventory and stonehearth.inventory.get_inventory then
-         local inventory = stonehearth.inventory:get_inventory()
-         if inventory and radiant and radiant.events and radiant.events.listen then
-            self._listeners.inventory_changed = radiant.events.listen(inventory, 'stonehearth:inventory:changed', function()
-               self._optimizer:mark_inventory_dirty('inventory')
-               self._optimizer:mark_inventory_dirty('storage')
-            end)
-         end
+   -- PATCH 3: Reconsider cascade limiter
+   if profile.reconsider_limiter and ReconsiderLimiterPatch then
+      local ok, err = pcall(ReconsiderLimiterPatch.apply, patch_config)
+      if ok and ReconsiderLimiterPatch.is_patched() then
+         self._applied_patches[#self._applied_patches + 1] = 'PATCH 3: reconsider_limiter'
+         log:always('  [OK] PATCH 3 applied: reconsider cascade dedup + container cache')
+      else
+         log:error('  [FAIL] PATCH 3 (reconsider_limiter): %s', tostring(err))
       end
-   end)
+   end
 
-   if not ok then
-      log:debug('Best-effort inventory listener unavailable: %s', tostring(err))
+   -- PATCH 2: Filter URI fast-reject
+   if profile.filter_fast_reject and FilterFastRejectPatch then
+      local ok, err = pcall(FilterFastRejectPatch.apply, patch_config)
+      if ok and FilterFastRejectPatch.is_patched() then
+         self._applied_patches[#self._applied_patches + 1] = 'PATCH 2: filter_fast_reject'
+         log:always('  [OK] PATCH 2 applied: URI negative cache (flush=%d ticks)', profile.reject_flush_interval)
+      else
+         log:error('  [FAIL] PATCH 2 (filter_fast_reject): %s', tostring(err))
+      end
+   end
+
+   -- PATCH 1+4: Reconsider allocation + entity spread
+   if profile.reconsider_alloc and ReconsiderAllocPatch then
+      local ok, err = pcall(ReconsiderAllocPatch.apply, patch_config)
+      if ok and ReconsiderAllocPatch.is_patched() then
+         self._applied_patches[#self._applied_patches + 1] = 'PATCH 1+4: reconsider_alloc + spread'
+         log:always('  [OK] PATCH 1+4 applied: zero-alloc reconsider + entity spread (max=%d)', profile.max_reconsider_per_tick)
+      else
+         log:error('  [FAIL] PATCH 1+4 (reconsider_alloc): %s', tostring(err))
+      end
    end
 end
+
+function PerfModService:_apply_gc_tuning()
+   local profile = self:get_profile_data()
+   if not profile.gc_tuning or not GcOptimization then
+      return
+   end
+
+   GcOptimization.apply_gc_params(profile)
+   GcOptimization.set_instrumentation(self._instrumentation)
+
+   local ok, err = pcall(GcOptimization.apply, { instrumentation = self._instrumentation })
+   if ok then
+      self._applied_patches[#self._applied_patches + 1] = 'GC: tuning + object_tracker throttle'
+      log:always('  [OK] GC tuning applied (pause=%d, step=%d)', profile.gc_pause, profile.gc_stepsize)
+   else
+      log:warning('  [WARN] GC object_tracker patch failed: %s', tostring(err))
+   end
+end
+
+-- ??? Heartbeat ???????????????????????????????????????????????????????????
+
+function PerfModService:_start_heartbeat()
+   -- Oncelik: stonehearth.calendar (game tick ile senkron)
+   if stonehearth and stonehearth.calendar and stonehearth.calendar.set_interval then
+      self._heartbeat = stonehearth.calendar:set_interval('perf_mod_pump', '50ms', function()
+         self:_on_heartbeat_tick()
+      end)
+      return
+   end
+
+   -- Fallback: radiant.on_game_loop
+   if radiant and radiant.on_game_loop then
+      self._heartbeat = radiant.on_game_loop('perf_mod_pump', function()
+         self:_on_heartbeat_tick()
+      end)
+      return
+   end
+
+   log:warning('perf_mod: No heartbeat scheduler available ? tick-level flush disabled')
+end
+
+function PerfModService:_on_heartbeat_tick()
+   self._heartbeat_count = (self._heartbeat_count or 0) + 1
+
+   -- PATCH 3: Tick-level dedup + container cache temizle
+   if ReconsiderLimiterPatch and ReconsiderLimiterPatch.is_patched() then
+      pcall(ReconsiderLimiterPatch.flush_tick)
+   end
+
+   -- PATCH 2: Periyodik reject cache flush
+   if FilterFastRejectPatch and FilterFastRejectPatch.is_patched() then
+      pcall(FilterFastRejectPatch.tick)
+   end
+
+   -- GC adaptif step
+   local profile = self:get_profile_data()
+   if profile.gc_tuning and GcOptimization then
+      pcall(GcOptimization.adaptive_gc_step, profile)
+   end
+
+   -- Instrumentation publish
+   if self._instrumentation then
+      self._instrumentation:publish_if_available()
+   end
+
+   -- 30s ozet log (600 tick ~ 30s)
+   if self._heartbeat_count % 600 == 0 then
+      local snap = self._instrumentation:get_snapshot()
+      log:always('perf_mod 30s: profile=%s patches=%d reject=%d dedup=%d spread=%d gc_steps=%d',
+         self._settings:get().profile,
+         #self._applied_patches,
+         snap['perfmod:uri_reject_hits'] or 0,
+         snap['perfmod:reconsider_dedup_hits'] or 0,
+         snap['perfmod:reconsider_spread_defers'] or 0,
+         snap['perfmod:gc_adaptive_steps'] or 0)
+   end
+end
+
+-- ??? Startup Summary ?????????????????????????????????????????????????????
+
+function PerfModService:_log_startup_summary()
+   local profile = self._settings:get().profile or 'BALANCED'
+   local total = #self._applied_patches
+
+   log:always('=======================================================')
+   log:always('perf_mod v310 initialized')
+   log:always('  Profile: %s | ACE: %s | Patches: %d/%d',
+      profile, tostring(self._ace_present), total, 4)
+
+   if total == 0 then
+      log:always('  WARNING: No patches applied! Check errors above.')
+   end
+
+   log:always('=======================================================')
+end
+
+-- ??? Destroy ?????????????????????????????????????????????????????????????
 
 function PerfModService:destroy()
-   if self._listeners then
-      for _, listener in pairs(self._listeners) do
-         if listener and type(listener.destroy) == 'function' then
-            pcall(listener.destroy, listener)
-         end
-      end
-      self._listeners = {}
-   end
-
    if self._heartbeat then
       pcall(function()
          if stonehearth and stonehearth.calendar and stonehearth.calendar.cancel_interval then
@@ -120,286 +320,42 @@ function PerfModService:destroy()
       end)
       self._heartbeat = nil
    end
+
+   if ReconsiderAllocPatch then pcall(ReconsiderAllocPatch.restore) end
+   if FilterFastRejectPatch then pcall(FilterFastRejectPatch.restore) end
+   if ReconsiderLimiterPatch then pcall(ReconsiderLimiterPatch.restore) end
 end
 
-function PerfModService:_on_heartbeat_tick()
-   local now = self._clock:get_realtime_seconds()
-   local tick_start = now
-   local stall_s = now - (self._last_pump_at or now)
-   self._last_pump_at = now
-
-   self._optimizer:flush_tick_results()
-
-   pcall(ReconsiderOptimization.flush_tick)
-
-   if Config.DEFAULTS.gc_enabled ~= false then
-      local gc_ok = pcall(function()
-         local profile_name = self._runtime_profile_name or self._settings:get().profile
-         GcOptimization.adaptive_gc_step(self._clock, profile_name)
-      end)
-      if not gc_ok then
-         if (self._heartbeat_count or 0) % 2 == 0 then
-            pcall(collectgarbage, 'step', 0)
-         end
-      end
-   end
-
-   if stall_s >= 4 then
-      self._warm_resume_until = now + (self._settings:get().warm_resume_guard_s or 0)
-      self._instrumentation:inc('perfmod:warm_resume_guards')
-   end
-
-   local profile = self:get_profile_data()
-   self._coalescer:set_budget(profile.max_callbacks_per_pump, profile.max_pump_budget_ms)
-   self._coalescer:pump()
-
-   self._instrumentation:set('perfmod:cache_entry_count', self._cache._entry_count)
-
-   pcall(ReconsiderOptimization.publish_stats)
-
-   self._instrumentation:publish_if_available()
-   self:_recompute_health_and_runtime_profile(now)
-
-   if self._clock:get_elapsed_ms(tick_start) > 5 then
-      self._instrumentation:inc('perfmod:heavy_heartbeats')
-   end
-
-   self._heartbeat_count = (self._heartbeat_count or 0) + 1
-   if self._heartbeat_count % 1200 == 0 then
-      self._optimizer:prune_stale_states()
-   end
-
-   if self._heartbeat_count % 600 == 0 then
-      local snap = self._instrumentation:get_snapshot()
-      local hits   = snap['perfmod:cache_hits'] or 0
-      local misses = snap['perfmod:cache_misses'] or 0
-      local total  = hits + misses
-      local hit_pct = total > 0 and math.floor(hits * 100 / total) or 0
-      log:info('perf_mod: profile=%s health=%d hit_rate=%d%% entries=%d tick_hits=%d neg_hits=%d',
-         self._runtime_profile_name or self._settings:get().profile,
-         snap['perfmod:health_score'] or 0,
-         hit_pct,
-         snap['perfmod:cache_entry_count'] or 0,
-         snap['perfmod:tick_cache_hits'] or 0,
-         snap['perfmod:negative_hits'] or 0)
-   end
-end
-
-function PerfModService:_recompute_health_and_runtime_profile(now)
-   local snapshot = self._instrumentation:get_snapshot()
-   local deadlines  = (snapshot['perfmod:deadline_fallbacks'] or 0)    - (self._last_health_snapshot['perfmod:deadline_fallbacks'] or 0)
-   local safety     = (snapshot['perfmod:safety_fallbacks'] or 0)      - (self._last_health_snapshot['perfmod:safety_fallbacks'] or 0)
-   local circuits   = (snapshot['perfmod:circuit_open_bypasses'] or 0) - (self._last_health_snapshot['perfmod:circuit_open_bypasses'] or 0)
-   local long_ticks = (snapshot['perfmod:long_ticks'] or 0)            - (self._last_health_snapshot['perfmod:long_ticks'] or 0)
-
-   local raw_health = math.max(0, 100 - (deadlines * 3) - (safety * 15) - (circuits * 8) - (long_ticks * 5))
-   local alpha = Config.DEFAULTS.health_ema_alpha or 0.05
-   self._health_ema = alpha * raw_health + (1 - alpha) * (self._health_ema or 100)
-   local health = math.max(0, math.min(100, math.floor(self._health_ema)))
-   self._instrumentation:set_health_score(health)
-
-   self._last_health_snapshot = {
-      ['perfmod:deadline_fallbacks']    = snapshot['perfmod:deadline_fallbacks'] or 0,
-      ['perfmod:safety_fallbacks']      = snapshot['perfmod:safety_fallbacks'] or 0,
-      ['perfmod:circuit_open_bypasses'] = snapshot['perfmod:circuit_open_bypasses'] or 0,
-      ['perfmod:long_ticks']            = snapshot['perfmod:long_ticks'] or 0
-   }
-
-   local immediate_danger = (safety > 0 or circuits > 0)
-   local settings = self._settings:get()
-   local base_profile = settings.profile
-
-   local would_downshift = nil
-   if settings.auto_profile_downshift then
-      if base_profile == 'AGGRESSIVE' and (immediate_danger or health < 75) then
-         would_downshift = 'BALANCED'
-      end
-      if base_profile ~= 'SAFE' and (immediate_danger or health < 60 or long_ticks > 1) then
-         would_downshift = 'SAFE'
-      end
-   end
-
-   if would_downshift then
-      if would_downshift ~= self._runtime_profile_name then
-         self._instrumentation:inc('perfmod:auto_profile_downshifts')
-      end
-      self._runtime_profile_name = would_downshift
-      self._downshift_until = now + (Config.DEFAULTS.health_upshift_min_s or 20)
-   elseif now >= (self._downshift_until or 0) then
-      self._runtime_profile_name = nil
-   end
-end
-
-function PerfModService:_start_heartbeat()
-   if stonehearth and stonehearth.calendar and stonehearth.calendar.set_interval then
-      self._heartbeat = stonehearth.calendar:set_interval('perf_mod_pump', '50ms', function()
-         self:_on_heartbeat_tick()
-      end)
-      return
-   end
-
-   if radiant and radiant.on_game_loop then
-      self._heartbeat = radiant.on_game_loop('perf_mod_pump', function()
-         self:_on_heartbeat_tick()
-      end)
-      return
-   end
-
-   log:warning('No heartbeat scheduler available; coalescer/perf publishing will run only on query access')
-end
-
-function PerfModService:_apply_gc_tuning()
-   local cfg = Config.DEFAULTS
-   if cfg.gc_enabled == false then
-      return
-   end
-
-   local profile_name = self._settings:get().profile or 'SAFE'
-   local ok_gc = pcall(GcOptimization.apply_gc_params, profile_name)
-
-   if not ok_gc then
-      local ok = pcall(function()
-         collectgarbage('setpause',    cfg.gc_pause    or 110)
-         collectgarbage('setstepsize', cfg.gc_stepsize or 100)
-      end)
-      if ok then
-         log:info('perf_mod: GC tuning applied (fallback, pause=%d stepsize=%d)',
-            cfg.gc_pause or 110, cfg.gc_stepsize or 100)
-      end
-   else
-      log:info('perf_mod: Adaptive GC tuning applied (profile=%s)', profile_name)
-   end
-
-   pcall(GcOptimization.set_instrumentation, self._instrumentation)
-   pcall(GcOptimization.apply, self)
-end
-
-function PerfModService:get_clock()
-   return self._clock
-end
-
-function PerfModService:_detect_ace()
-   self._ace_present = false
-   if radiant and radiant.mods and radiant.mods.is_installed then
-      self._ace_present = radiant.mods.is_installed('stonehearth_ace')
-   end
-
-   log:info('ACE present: %s', tostring(self._ace_present))
-end
-
-function PerfModService:_apply_known_patches()
-   local candidates = {
-      'monkey_patches.storage_service_patch',
-      'monkey_patches.inventory_service_patch',
-      'monkey_patches.task_service_patch',
-      'monkey_patches.restock_patch',
-      'monkey_patches.town_population_patch',
-      'monkey_patches.workshop_patch'
-   }
-
-   self._applied_patch_points = {}
-   for _, path in ipairs(candidates) do
-      local ok, patch_module = pcall(require, path)
-      if ok and patch_module and patch_module.apply then
-         local applied = patch_module.apply(self)
-         if applied then
-            self._applied_patch_points[#self._applied_patch_points + 1] = path
-            log:info('Applied known patch: %s', path)
-         end
-      end
-   end
-end
-
-function PerfModService:_apply_phase1_patches()
-   local phase1_patches = {
-      'monkey_patches.events_optimization_patch',
-      'monkey_patches.counter_optimization_patch',
-      'monkey_patches.debug_string_patch',
-   }
-
-   for _, path in ipairs(phase1_patches) do
-      local ok, patch_module = pcall(require, path)
-      if ok and patch_module and patch_module.apply then
-         local ok2, applied = pcall(patch_module.apply, self)
-         if ok2 and applied then
-            self._applied_patch_points[#self._applied_patch_points + 1] = path
-            log:info('Applied phase-1 patch: %s', path)
-         elseif not ok2 then
-            log:warning('Phase-1 patch failed: %s - %s', path, tostring(applied))
-         end
-      elseif not ok then
-         log:warning('Phase-1 patch load failed: %s - %s', path, tostring(patch_module))
-      end
-   end
-end
-
-function PerfModService:_apply_phase2_patches()
-   local phase2_patches = {
-      'monkey_patches.reconsider_optimization_patch',
-   }
-
-   for _, path in ipairs(phase2_patches) do
-      local ok, patch_module = pcall(require, path)
-      if ok and patch_module and patch_module.apply then
-         local ok2, applied = pcall(patch_module.apply, self)
-         if ok2 and applied then
-            self._applied_patch_points[#self._applied_patch_points + 1] = path
-            log:info('Applied phase-2 patch: %s', path)
-         elseif not ok2 then
-            log:warning('Phase-2 patch failed: %s - %s', path, tostring(applied))
-         end
-      elseif not ok then
-         log:warning('Phase-2 patch load failed: %s - %s', path, tostring(patch_module))
-      end
-   end
-end
-
-function PerfModService:_run_discovery_if_enabled()
-   if not self._settings:get().discovery_enabled then
-      return
-   end
-
-   self._discovery:run()
-end
+-- ??? Public API ??????????????????????????????????????????????????????????
 
 function PerfModService:get_profile_data()
-   local runtime_name = self._runtime_profile_name or self._settings:get().profile
-   return Config.get_profile(runtime_name)
+   local profile_name = self._settings and self._settings:get().profile or 'BALANCED'
+   return Config.get_profile(profile_name)
 end
 
 function PerfModService:get_settings()
-   local view = self._settings:get()
-   view.runtime_profile = self._runtime_profile_name or view.profile
-   return view
+   if not self._settings then return { profile = 'BALANCED', instrumentation_enabled = false } end
+   return self._settings:get()
 end
 
 function PerfModService:update_settings(data)
+   if not self._settings then return false end
    if self._settings:update(data) then
-      self._runtime_profile_name = nil
       self._instrumentation:set_enabled(self._settings:get().instrumentation_enabled)
-      if data.discovery_enabled then
-         self:_run_discovery_if_enabled()
+
+      local profile = self:get_profile_data()
+      if ReconsiderAllocPatch and ReconsiderAllocPatch.is_patched() then
+         ReconsiderAllocPatch.set_max_per_tick(profile.max_reconsider_per_tick)
       end
+
+      if profile.gc_tuning and GcOptimization then
+         GcOptimization.apply_gc_params(profile)
+      end
+
+      log:always('perf_mod: settings updated ? profile=%s', self._settings:get().profile)
       return true
    end
-
    return false
-end
-
-function PerfModService:is_context_cache_enabled(context)
-   return self._settings:is_context_enabled(context)
-end
-
-function PerfModService:is_warm_resume_guard_active()
-   return self._clock:get_realtime_seconds() < (self._warm_resume_until or 0)
-end
-
-function PerfModService:get_optimizer()
-   return self._optimizer
-end
-
-function PerfModService:get_discovery()
-   return self._discovery
 end
 
 function PerfModService:get_instrumentation()
@@ -407,6 +363,7 @@ function PerfModService:get_instrumentation()
 end
 
 function PerfModService:get_instrumentation_snapshot()
+   if not self._instrumentation then return {} end
    return self._instrumentation:get_snapshot()
 end
 

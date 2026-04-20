@@ -1,57 +1,38 @@
+-- instrumentation.lua
+-- Performans saya?lar? ? sadele?tirilmi? versiyon
+--
+-- Eski mod: 60+ counter ? ?o?u art?k silinen mod?llere ait
+-- Yeni mod: Sadece aktif patch'lerin saya?lar?
+
 local Instrumentation = class()
 
 local COUNTER_NAMES = {
-   'perfmod:cache_hits',
-   'perfmod:cache_misses',
-   'perfmod:negative_hits',
-   'perfmod:recomputes_coalesced',
-   'perfmod:recompute_calls',
-   'perfmod:incremental_scan_steps',
-   'perfmod:full_scan_fallbacks',
-   'perfmod:deadline_fallbacks',
-   'perfmod:avg_query_ms',
-   'perfmod:long_ticks',
-   'perfmod:admission_skips',
-   'perfmod:oversized_skips',
-   'perfmod:dirty_negative_bypasses',
-   'perfmod:urgent_bypasses',
-   'perfmod:key_bypass_complex',
-   'perfmod:negative_cache_skips',
-   'perfmod:safety_fallbacks',
-   'perfmod:circuit_open_bypasses',
-   'perfmod:ai_path_bypasses',
-   'perfmod:noisy_signature_bypasses',
-   'perfmod:context_bypasses',
-   'perfmod:warm_resume_guards',
-   'perfmod:auto_profile_downshifts',
-   'perfmod:pump_budget_breaks',
-   'perfmod:health_score',
-   'perfmod:heavy_heartbeats',
-   'perfmod:task_invalidations',
-   'perfmod:tick_cache_hits',
-   'perfmod:fast_key_hits',
-   'perfmod:cache_entry_count',
-   'perfmod:restock_coalesces',
-   'perfmod:town_score_coalesces',
-   'perfmod:population_coalesces',
-   'perfmod:workshop_coalesces',
-   'perfmod:events_prune_skips',
+   -- PATCH 1+4: Reconsider allocation + entity spread
+   'perfmod:reconsider_alloc_ticks',      -- patched tick say?s?
+   'perfmod:reconsider_spread_ticks',     -- overflow olan tick say?s?
+   'perfmod:reconsider_spread_defers',    -- ertelenen entity say?s?
+
+   -- PATCH 2: Filter URI fast-reject
+   'perfmod:uri_reject_hits',             -- URI reject cache hit'leri
+   'perfmod:uri_reject_caches',           -- yeni URI reject cache entry'leri
+
+   -- PATCH 3: Reconsider limiter
+   'perfmod:reconsider_dedup_hits',       -- tick-level dedup ile engellenen ?a?r?lar
+
+   -- GC
    'perfmod:gc_adaptive_steps',
    'perfmod:gc_spike_skips',
    'perfmod:gc_post_spike_boosts',
-   'perfmod:debug_log_guards',
-   'perfmod:counter_cache_hits',
-   'perfmod:storage_fullness_cache_hits',
-   'perfmod:reconsider_dedup_hits',
-   'perfmod:reconsider_snapshot_reuses'
+
+   -- Genel
+   'perfmod:health_score',
+   'perfmod:heavy_heartbeats',
 }
 
 function Instrumentation:initialize(log)
    self._log = log
    self._enabled = false
    self._counters = {}
-   self._rolling_samples = 0
-   self._rolling_avg = 0
    for _, name in ipairs(COUNTER_NAMES) do
       self._counters[name] = 0
    end
@@ -59,10 +40,6 @@ end
 
 function Instrumentation:set_enabled(enabled)
    self._enabled = enabled and true or false
-end
-
-function Instrumentation:set_health_score(value)
-   self._counters['perfmod:health_score'] = value or 0
 end
 
 function Instrumentation:set(name, value)
@@ -74,15 +51,6 @@ function Instrumentation:inc(name, amount)
       return
    end
    self._counters[name] = (self._counters[name] or 0) + (amount or 1)
-end
-
-function Instrumentation:observe_query_time(ms)
-   if not self._enabled then
-      return
-   end
-   self._rolling_samples = self._rolling_samples + 1
-   self._rolling_avg = self._rolling_avg + (ms - self._rolling_avg) / self._rolling_samples
-   self._counters['perfmod:avg_query_ms'] = self._rolling_avg
 end
 
 function Instrumentation:get_snapshot()
@@ -97,6 +65,7 @@ function Instrumentation:publish_if_available()
    if not self._enabled then
       return
    end
+
    if stonehearth and stonehearth.perf_mon and stonehearth.perf_mon.set_counter then
       for name, value in pairs(self._counters) do
          stonehearth.perf_mon:set_counter(name, value)
