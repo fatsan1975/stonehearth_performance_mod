@@ -1,5 +1,5 @@
 -- stonehearth_performance_mod_client.lua
--- Client init ? UI resources are loaded through manifest.ui
+-- Client init — UI resources are loaded through manifest.ui
 
 stonehearth_performance_mod_client = {}
 

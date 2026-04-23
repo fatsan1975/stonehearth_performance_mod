@@ -1,18 +1,58 @@
 {
   "ui": {
     "settings": {
-      "title": "Performance Mod",
-      "description": "Surgical CPU optimizations targeting allocation reduction and filter cache efficiency. Safe for all ACE saves.",
+      "title": "Performance Mod v400",
+      "description": "Massive performance optimization: dedup-first reconsider cascade, URI filter fast-reject, adaptive GC, optional restock/events coalescing. Hearthling-idle watchdog guards simulation safety.",
 
       "profile": "Optimization Profile",
+      "profile_description": "Aggressiveness level. Balanced is recommended. Aggressive adds opt-in experimental patches (restock throttle, events coalescing).",
 
       "profiles": {
         "safe": "Safe",
+        "safe_description": "Conservative settings. Larger entity spread limit, longer cache flush intervals. Watchdog trip target when idle issues detected.",
         "balanced": "Balanced (Default)",
-        "aggressive": "Aggressive"
+        "balanced_description": "Moderate optimization. Good for most colonies 15-20 hearthlings.",
+        "aggressive": "Aggressive",
+        "aggressive_description": "Maximum optimization including opt-in experimental patches. For large towns 25+ hearthlings."
       },
 
-      "instrumentation": "Enable Diagnostics",
+      "instrumentation": "Enable Counters",
+      "instrumentation_description": "Publishes performance counters to the profiler and log every 10s. Recommended on for troubleshooting.",
+
+      "panel": {
+        "header": "Performance Mod — Live Metrics",
+        "version": "Version",
+        "profile": "Profile",
+        "ace_present": "ACE detected",
+        "active_patches": "Active patches",
+        "uptime": "Uptime",
+        "heartbeat": "Heartbeats",
+        "counters_header": "Counters",
+        "reject_hits": "URI rejects (PA)",
+        "caches_added": "URI cached (PA)",
+        "dedup_sweeps_saved": "Sweeps skipped (PB)",
+        "first_adds": "First adds (PB)",
+        "dedup_hits": "Reconsider dedups (P3)",
+        "throttle_hits": "Cache throttles (PC)",
+        "spread_defers": "Entity defers (P1)",
+        "adaptive_steps": "GC steps (GC)",
+        "spike_skips": "GC spike skips (GC)",
+        "watchdog_ratio": "Hearthling idle ratio",
+        "watchdog_fires": "Watchdog fires",
+        "circuit_breaker_trips": "Circuit breaker trips",
+        "patches_header": "Patch toggles",
+        "patch_P1": "P1 alloc + spread",
+        "patch_PA": "PA URI fast-reject",
+        "patch_PB": "PB dedup-first",
+        "patch_P3": "P3 reconsider dedup",
+        "patch_PC": "PC cache throttle",
+        "patch_PD": "PD restock throttle (experimental)",
+        "patch_PE": "PE contents coalesce (experimental)",
+        "patch_GC": "GC tuning",
+        "reset_button": "Reset counters",
+        "dump_button": "Dump to log",
+        "watchdog_threshold": "Watchdog idle threshold"
+      },
 
       "save": "Apply"
     }

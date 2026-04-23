@@ -2,29 +2,29 @@
 -- PATCH 3: reconsider_entity cascade limiter
 --
 -- Sorun:
---   ACE'nin reconsider_entity override'? her ?a?r?da:
---     1) _add_reconsidered_entity(item) ? FAST_CALL_CACHES full sweep
---     2) container_for(item) lookup ? inventory traversal
---     3) reconsider_entity_in_filter_caches ? per-storage cache update
---     4) _add_reconsidered_entity(container) ? FAST_CALL_CACHES full sweep (tekrar!)
---   20 item burst = 40? FAST_CALL_CACHES sweep + 20? container_for lookup
+--   ACE'nin reconsider_entity override'ı her çağrıda:
+--     1) _add_reconsidered_entity(item) → FAST_CALL_CACHES full sweep
+--     2) container_for(item) lookup → inventory traversal
+--     3) reconsider_entity_in_filter_caches → per-storage cache update
+--     4) _add_reconsidered_entity(container) → FAST_CALL_CACHES full sweep (tekrar!)
+--   20 item burst = 40× FAST_CALL_CACHES sweep + 20× container_for lookup
 --
--- ??z?m:
+-- Çözüm:
 --   reconsider_entity seviyesinde dedup + container lookup cache:
---   1) Ayn? tick'te ayn? entity i?in tekrar reconsider ?a?r?l?rsa atla
---      (orijinal _add_reconsidered_entity de bunu yap?yor ama B?Z daha erken,
---       container_for lookup'tan ?NCE yakal?yoruz)
---   2) Container lookup sonu?lar?n? tick boyunca cache'le
---      (20 item ayn? storage'da ? 20 container_for yerine 1)
---   3) Ayn? container i?in tekrar _add_reconsidered_entity ?a?r?s?n? engelle
+--   1) Aynı tick'te aynı entity için tekrar reconsider çağrılırsa atla
+--      (orijinal _add_reconsidered_entity de bunu yapıyor ama BİZ daha erken,
+--       container_for lookup'tan ÖNCE yakalıyoruz)
+--   2) Container lookup sonuçlarını tick boyunca cache'le
+--      (20 item aynı storage'da → 20 container_for yerine 1)
+--   3) Aynı container için tekrar _add_reconsidered_entity çağrısını engelle
 --
--- NOT: FAST_CALL_CACHES file-local oldu?u i?in do?rudan batch'leyemiyoruz.
---   Ama bu patch sayesinde _add_reconsidered_entity ?a?r? SAYISI azal?r,
---   dolay?s?yla FAST_CALL_CACHES sweep say?s? da azal?r.
+-- NOT: FAST_CALL_CACHES file-local olduğu için doğrudan batch'leyemiyoruz.
+--   Ama bu patch sayesinde _add_reconsidered_entity çağrı SAYISI azalır,
+--   dolayısıyla FAST_CALL_CACHES sweep sayısı da azalır.
 --
--- G?venlik:
---   - Entity atlanmaz, sadece ayn? tick'teki duplikatlar engellenir
---   - Container cache her tick ba??nda temizlenir
+-- Güvenlik:
+--   - Entity atlanmaz, sadece aynı tick'teki duplikatlar engellenir
+--   - Container cache her tick başında temizlenir
 --   - Kill-switch: config.patches.reconsider_limiter
 
 local log = radiant.log.create_logger('perf_mod:reconsider_limiter')
@@ -35,19 +35,19 @@ local M = {}
 local _patched = false
 local _original_reconsider_entity = nil
 
--- Tick-level dedup seti: bu tick'te zaten reconsider edilmi? entity ID'leri
+-- Tick-level dedup seti: bu tick'te zaten reconsider edilmiş entity ID'leri
 local _reconsidered_this_tick = {}
 
--- Container lookup cache: entity_id ? container entity (veya false = yok)
+-- Container lookup cache: entity_id → container entity (veya false = yok)
 local _container_cache = {}
 
 -- Instrumentation
 local _instrumentation = nil
 
--- ??? Tick flush ??????????????????????????????????????????????????????????
--- Her tick ba??nda ?a?r?l?r (service heartbeat'ten)
+-- ─── Tick flush ──────────────────────────────────────────────────────────
+-- Her tick başında çağrılır (service heartbeat'ten)
 function M.flush_tick()
-   -- Tablolar? wipe (reuse, yeni allocation yok)
+   -- Tabloları wipe (reuse, yeni allocation yok)
    for k in pairs(_reconsidered_this_tick) do
       _reconsidered_this_tick[k] = nil
    end
@@ -56,9 +56,9 @@ function M.flush_tick()
    end
 end
 
--- ??? Patched reconsider_entity ???????????????????????????????????????????
+-- ─── Patched reconsider_entity ───────────────────────────────────────────
 -- ACE'nin reconsider_entity'sini replace eder.
--- Ayn? mant?k, ama dedup + container cache ekli.
+-- Aynı mantık, ama dedup + container cache ekli.
 local function _patched_reconsider_entity(self, entity, reason, reconsider_parent)
    if not entity or not entity:is_valid() then
       return
@@ -67,7 +67,7 @@ local function _patched_reconsider_entity(self, entity, reason, reconsider_paren
    local id = entity:get_id()
 
    -- DEDUP: Bu tick'te zaten reconsider edildiyse atla
-   -- Bu, _add_reconsidered_entity'deki dedup'tan DAHA erken yakal?yor:
+   -- Bu, _add_reconsidered_entity'deki dedup'tan DAHA erken yakalıyor:
    -- container_for lookup, reconsider_entity_in_filter_caches YAPILMAZ
    if _reconsidered_this_tick[id] then
       if _instrumentation then
@@ -77,18 +77,18 @@ local function _patched_reconsider_entity(self, entity, reason, reconsider_paren
    end
    _reconsidered_this_tick[id] = true
 
-   -- Orijinal _add_reconsidered_entity ?a?r?s? (FAST_CALL_CACHES clear dahil)
+   -- Orijinal _add_reconsidered_entity çağrısı (FAST_CALL_CACHES clear dahil)
    self:_add_reconsidered_entity(entity, reason)
 
-   -- Container lookup + reconsider (ACE mant???)
+   -- Container lookup + reconsider (ACE mantığı)
    local player_id = radiant.entities.get_player_id(entity)
    if player_id and player_id ~= '' then
       local inventory = stonehearth.inventory:get_inventory(player_id)
       if inventory and inventory.is_initialized and inventory:is_initialized() then
-         -- Container cache: ayn? entity i?in container_for tekrar ?a?r?lmaz
+         -- Container cache: aynı entity için container_for tekrar çağrılmaz
          local container = _container_cache[id]
          if container == nil then
-            -- Cache miss: ger?ek lookup yap
+            -- Cache miss: gerçek lookup yap
             container = inventory:container_for(entity) or false
             _container_cache[id] = container
          end
@@ -97,13 +97,13 @@ local function _patched_reconsider_entity(self, entity, reason, reconsider_paren
             local container_id = container:get_id()
             local is_stockpile = container:get_component('stonehearth:stockpile')
             if not is_stockpile then
-               -- ACE: storage filter cache g?ncelle
+               -- ACE: storage filter cache güncelle
                local storage_comp = container:get_component('stonehearth:storage')
                if storage_comp then
                   pcall(storage_comp.reconsider_entity_in_filter_caches, storage_comp, id, entity)
                end
 
-               -- Container i?in dedup kontrol?
+               -- Container için dedup kontrolü
                if not _reconsidered_this_tick[container_id] then
                   _reconsidered_this_tick[container_id] = true
                   self:_add_reconsidered_entity(container, reason .. '(also triggering container)')
@@ -125,7 +125,7 @@ local function _patched_reconsider_entity(self, entity, reason, reconsider_paren
    end
 end
 
--- ??? Apply / Restore ?????????????????????????????????????????????????????
+-- ─── Apply / Restore ─────────────────────────────────────────────────────
 function M.apply(config)
    if _patched then
       return true
@@ -138,7 +138,7 @@ function M.apply(config)
    local ok, err = pcall(function()
       local ai_service = stonehearth.ai
 
-      -- ACE'nin reconsider_entity override'?n? sakla
+      -- ACE'nin reconsider_entity override'ını sakla
       _original_reconsider_entity = ai_service.reconsider_entity
 
       -- Patch uygula
@@ -148,7 +148,7 @@ function M.apply(config)
    end)
 
    if not ok then
-      log:error('PATCH 3 (reconsider_limiter) failed: %s ? falling back to original', tostring(err))
+      log:error('PATCH 3 (reconsider_limiter) failed: %s — falling back to original', tostring(err))
       M.restore()
       return false
    end

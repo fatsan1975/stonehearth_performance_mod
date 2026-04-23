@@ -1,4 +1,4 @@
--- bootstrap.lua ? Bombproof server init
+-- bootstrap.lua — Bombproof server init
 --
 -- PROBLEM: Eski bootstrap top-level'da class(), require chain calistiriyordu.
 --   Mod yukleme zamaninda class() veya diger globaller hazir degilse
@@ -32,18 +32,18 @@ local function _start()
    if _initialized then return end
    _initialized = true
 
-   _safe_log('always', 'perf_mod: radiant:init fired ? loading service module...')
+   _safe_log('always', 'perf_mod: radiant:init fired — loading service module...')
 
    -- 1) Service modulunu yukle (class() artik hazir)
    local ok_req, result = pcall(require, 'scripts.perf_mod.service')
    if not ok_req then
-      _safe_log('error', 'perf_mod: FATAL ? service module load failed: %s', tostring(result))
+      _safe_log('error', 'perf_mod: FATAL — service module load failed: %s', tostring(result))
       return
    end
 
    local PerfModService = result
    if type(PerfModService) ~= 'table' then
-      _safe_log('error', 'perf_mod: FATAL ? service module returned %s (expected table)', type(PerfModService))
+      _safe_log('error', 'perf_mod: FATAL — service module returned %s (expected table)', type(PerfModService))
       return
    end
 
@@ -53,15 +53,15 @@ local function _start()
    end)
 
    if not ok_init then
-      _safe_log('error', 'perf_mod: FATAL ? service initialization failed: %s', tostring(err_init))
+      _safe_log('error', 'perf_mod: FATAL — service initialization failed: %s', tostring(err_init))
    end
 end
 
--- radiant:init event'ini dinle ? tum mod servisleri hazir olduktan sonra ates eder
+-- radiant:init event'ini dinle — tum mod servisleri hazir olduktan sonra ates eder
 if radiant and radiant.events then
    radiant.events.listen_once(radiant, 'radiant:init', _start)
 else
-   _safe_log('error', 'perf_mod: radiant.events not available ? cannot register init listener')
+   _safe_log('error', 'perf_mod: radiant.events not available — cannot register init listener')
 end
 
 return { start = _start }

@@ -1,23 +1,23 @@
 -- instrumentation.lua
--- Performans saya?lar? ? sadele?tirilmi? versiyon
+-- Performans sayaçları — sadeleştirilmiş versiyon
 --
--- Eski mod: 60+ counter ? ?o?u art?k silinen mod?llere ait
--- Yeni mod: Sadece aktif patch'lerin saya?lar?
+-- Eski mod: 60+ counter → çoğu artık silinen modüllere ait
+-- Yeni mod: Sadece aktif patch'lerin sayaçları
 
 local Instrumentation = class()
 
 local COUNTER_NAMES = {
    -- PATCH 1+4: Reconsider allocation + entity spread
-   'perfmod:reconsider_alloc_ticks',      -- patched tick say?s?
-   'perfmod:reconsider_spread_ticks',     -- overflow olan tick say?s?
-   'perfmod:reconsider_spread_defers',    -- ertelenen entity say?s?
+   'perfmod:reconsider_alloc_ticks',      -- patched tick sayısı
+   'perfmod:reconsider_spread_ticks',     -- overflow olan tick sayısı
+   'perfmod:reconsider_spread_defers',    -- ertelenen entity sayısı
 
    -- PATCH 2: Filter URI fast-reject
    'perfmod:uri_reject_hits',             -- URI reject cache hit'leri
    'perfmod:uri_reject_caches',           -- yeni URI reject cache entry'leri
 
    -- PATCH 3: Reconsider limiter
-   'perfmod:reconsider_dedup_hits',       -- tick-level dedup ile engellenen ?a?r?lar
+   'perfmod:reconsider_dedup_hits',       -- tick-level dedup ile engellenen çağrılar
 
    -- GC
    'perfmod:gc_adaptive_steps',

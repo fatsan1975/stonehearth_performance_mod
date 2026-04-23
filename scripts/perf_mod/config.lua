@@ -1,23 +1,23 @@
 -- config.lua
--- Performance Mod konfig?rasyonu ? sadele?tirilmi? versiyon
+-- Performance Mod konfigürasyonu — sadeleştirilmiş versiyon
 --
--- Eski mod: 3 profil ? 30+ parametre = karma??k ama etkisiz
--- Yeni mod: 3 profil ? patch toggle + birka? ayarlanabilir parametre
+-- Eski mod: 3 profil × 30+ parametre = karmaşık ama etkisiz
+-- Yeni mod: 3 profil × patch toggle + birkaç ayarlanabilir parametre
 
 local Config = {}
 
 Config.PROFILES = {
    SAFE = {
       id = 'SAFE',
-      -- Patch toggle'lar?
+      -- Patch toggle'ları
       reconsider_alloc = true,    -- PATCH 1: allocation eliminasyonu
       filter_fast_reject = true,  -- PATCH 2: URI negatif cache
       reconsider_limiter = true,  -- PATCH 3: cascade dedup
-      reconsider_spread = true,   -- PATCH 4: entity spread (PATCH 1 i?inde)
+      reconsider_spread = true,   -- PATCH 4: entity spread (PATCH 1 içinde)
       gc_tuning = true,           -- GC parametreleri
 
       -- Ayarlanabilir parametreler
-      max_reconsider_per_tick = 80,    -- PATCH 4: tick ba??na max entity
+      max_reconsider_per_tick = 80,    -- PATCH 4: tick başına max entity
       reject_flush_interval = 400,     -- PATCH 2: reject cache flush (tick)
 
       -- GC parametreleri
