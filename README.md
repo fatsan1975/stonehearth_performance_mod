@@ -1,3 +1,3 @@
 # Stonehearth Performance Mod (ACE 0.9.6)
 
-Waiting for a big update!
+First unstable release. You can download the zip and extract into /mods folder (Dont forget to put extracted items together in one folder if it isn't already)
