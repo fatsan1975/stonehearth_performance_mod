@@ -3,20 +3,20 @@
 --
 -- Sorun:
 --   _call_reconsider_callbacks her tick'te:
---     1) self._reconsidered_entities = {} ? eski tablo GC'ye gider
---     2) local reconsider_callbacks = {} ? her tick yeni tablo
---     3) radiant.xpcall(function() cb(msg) end) ? entity?callback kadar closure
---   23 hearthling, hauling aktif = 200-1000 closure/tick ? lua_gc'nin ana m??terisi
+--     1) self._reconsidered_entities = {} → eski tablo GC'ye gider
+--     2) local reconsider_callbacks = {} → her tick yeni tablo
+--     3) radiant.xpcall(function() cb(msg) end) → entity×callback kadar closure
+--   23 hearthling, hauling aktif = 200-1000 closure/tick → lua_gc'nin ana müşterisi
 --
--- ??z?m:
+-- Çözüm:
 --   1) reconsidered tablosu: swap yerine wipe-and-reuse
---   2) callback snapshot: dirty flag ile sadece de?i?ti?inde rebuild
---   3) xpcall closure ? pcall direct call (s?f?r closure allocation)
---   4) Entity spread: MAX_PER_TICK a??l?rsa kalan? sonraki tick'e ta??
+--   2) callback snapshot: dirty flag ile sadece değiştiğinde rebuild
+--   3) xpcall closure → pcall direct call (sıfır closure allocation)
+--   4) Entity spread: MAX_PER_TICK aşılırsa kalanı sonraki tick'e taşı
 --
--- G?venlik:
---   - Semantik olarak orijinal ile ayn? davran??
---   - pcall sarmal? ? hata durumunda orijinal fonksiyon restore edilir
+-- Güvenlik:
+--   - Semantik olarak orijinal ile aynı davranış
+--   - pcall sarmalı — hata durumunda orijinal fonksiyon restore edilir
 --   - Kill-switch: config.patches.reconsider_alloc
 
 local log = radiant.log.create_logger('perf_mod:reconsider_alloc')
@@ -30,11 +30,11 @@ local _original_on_reconsider_entity = nil
 local _original_add_reconsidered_entity = nil
 
 -- Reuse edilecek tablolar
-local _callback_snapshot = {}        -- callback fonksiyonlar? (reuse)
-local _callback_snapshot_len = 0     -- snapshot uzunlu?u
+local _callback_snapshot = {}        -- callback fonksiyonları (reuse)
+local _callback_snapshot_len = 0     -- snapshot uzunluğu
 local _callback_snapshot_dirty = true -- yeniden build gerekli mi
 
--- Overflow buffer: MAX_PER_TICK a??ld???nda kalanlar burada birikir
+-- Overflow buffer: MAX_PER_TICK aşıldığında kalanlar burada birikir
 local _overflow = {}
 local _overflow_count = 0
 
@@ -44,16 +44,16 @@ local _max_per_tick = 64
 -- Instrumentation
 local _instrumentation = nil
 
--- ??? Callback snapshot y?netimi ??????????????????????????????????????????
--- on_reconsider_entity ?a?r?ld???nda (yeni callback eklendi?inde/silindi?inde)
--- dirty flag set edilir. Snapshot sadece dirty oldu?unda rebuild olur.
+-- ─── Callback snapshot yönetimi ──────────────────────────────────────────
+-- on_reconsider_entity çağrıldığında (yeni callback eklendiğinde/silindiğinde)
+-- dirty flag set edilir. Snapshot sadece dirty olduğunda rebuild olur.
 
 local function _mark_callbacks_dirty()
    _callback_snapshot_dirty = true
 end
 
 local function _rebuild_callback_snapshot(ai_service)
-   -- Eski snapshot'? temizle (reuse i?in)
+   -- Eski snapshot'ı temizle (reuse için)
    for i = 1, _callback_snapshot_len do
       _callback_snapshot[i] = nil
    end
@@ -67,13 +67,13 @@ local function _rebuild_callback_snapshot(ai_service)
    _callback_snapshot_dirty = false
 end
 
--- ??? Patched _call_reconsider_callbacks ??????????????????????????????????
+-- ─── Patched _call_reconsider_callbacks ──────────────────────────────────
 -- Orijinalin allocation-free versiyonu.
 local function _patched_call_reconsider_callbacks(self)
    -- 1) Reconsidered entity'leri al: swap yerine wipe-and-reuse
-   --    Ama dikkat: callback'ler s?ras?nda yeni reconsider ?a?r?labilir.
-   --    Bu y?zden mevcut listeyi "current" olarak al, self'i bo? bir tabloya swap et.
-   --    Fark: bo? tablo bir kez olu?turulur ve sonra reuse edilir.
+   --    Ama dikkat: callback'ler sırasında yeni reconsider çağrılabilir.
+   --    Bu yüzden mevcut listeyi "current" olarak al, self'i boş bir tabloya swap et.
+   --    Fark: boş tablo bir kez oluşturulur ve sonra reuse edilir.
    local reconsidered = self._reconsidered_entities
 
    -- Overflow'dan kalan entity'ler varsa ekle
@@ -87,35 +87,35 @@ local function _patched_call_reconsider_callbacks(self)
       _overflow_count = 0
    end
 
-   -- Bo? mu kontrol et (en yayg?n durum: gece, idle)
+   -- Boş mu kontrol et (en yaygın durum: gece, idle)
    if not next(reconsidered) then
       return
    end
 
-   -- Yeni tablo ile swap (callback s?ras?nda gelen reconsider'lar buraya yaz?l?r)
-   -- NOT: Bu tek allocation ka??n?lmaz ? callback s?ras?nda self._reconsidered_entities'e
-   -- yaz?lacak yeni entity'ler eski tablo ile kar??mamal?.
-   -- AMA: _overflow mekanizmas? ile bu tabloyu da reuse edebiliriz.
+   -- Yeni tablo ile swap (callback sırasında gelen reconsider'lar buraya yazılır)
+   -- NOT: Bu tek allocation kaçınılmaz — callback sırasında self._reconsidered_entities'e
+   -- yazılacak yeni entity'ler eski tablo ile karışmamalı.
+   -- AMA: _overflow mekanizması ile bu tabloyu da reuse edebiliriz.
    self._reconsidered_entities = {}
 
-   -- 2) Callback snapshot'? g?ncelle (sadece dirty ise)
+   -- 2) Callback snapshot'ı güncelle (sadece dirty ise)
    if _callback_snapshot_dirty then
       _rebuild_callback_snapshot(self)
    end
 
-   -- 3) PATCH 4: Entity spread ? MAX_PER_TICK a??l?rsa b?l
+   -- 3) PATCH 4: Entity spread — MAX_PER_TICK aşılırsa böl
    local entity_count = 0
    local process_reconsidered = reconsidered
    local has_overflow = false
 
    if _max_per_tick > 0 then
-      -- H?zl? count (pairs ile)
+      -- Hızlı count (pairs ile)
       for _ in pairs(reconsidered) do
          entity_count = entity_count + 1
       end
 
       if entity_count > _max_per_tick then
-         -- ?lk MAX_PER_TICK entity'yi i?le, kalan?n? overflow'a ta??
+         -- İlk MAX_PER_TICK entity'yi işle, kalanını overflow'a taşı
          local processed = 0
          for id, msg in pairs(reconsidered) do
             if processed >= _max_per_tick then
@@ -134,7 +134,7 @@ local function _patched_call_reconsider_callbacks(self)
       end
    end
 
-   -- 4) Entity ? Callback loop ? SIFIR closure allocation
+   -- 4) Entity × Callback loop — SIFIR closure allocation
    local snapshot = _callback_snapshot
    local snapshot_len = _callback_snapshot_len
    local single_entity_cbs = self._single_entity_reconsider_callbacks
@@ -143,8 +143,8 @@ local function _patched_call_reconsider_callbacks(self)
       -- All-entity callbacks
       if msg.entity and msg.entity:is_valid() then
          for i = 1, snapshot_len do
-            -- pcall(fn, arg) ? closure allocation YOK
-            -- Orijinal: radiant.xpcall(function() cb(msg) end) ? closure allocation VAR
+            -- pcall(fn, arg) → closure allocation YOK
+            -- Orijinal: radiant.xpcall(function() cb(msg) end) → closure allocation VAR
             local ok, err = pcall(snapshot[i], msg)
             if not ok then
                log:debug('reconsider callback error: %s', tostring(err))
@@ -167,11 +167,11 @@ local function _patched_call_reconsider_callbacks(self)
    -- 5) C++ pathfinder'a bildir
    _radiant.sim.reconsider_entities(reconsidered)
 
-   -- 6) Kullan?lm?? reconsidered tablosunu temizle (GC'ye gitmez, reuse i?in haz?r)
-   -- NOT: Bu tabloyu reuse etmek zor ??nk? self._reconsidered_entities zaten
-   -- yeni bir tablo. Ama callback s?ras?nda az entity eklendiyse,
-   -- sonraki tick'te self._reconsidered_entities k???k kal?r.
-   -- Ger?ek kazan? callback snapshot reuse ve closure eliminasyonunda.
+   -- 6) Kullanılmış reconsidered tablosunu temizle (GC'ye gitmez, reuse için hazır)
+   -- NOT: Bu tabloyu reuse etmek zor çünkü self._reconsidered_entities zaten
+   -- yeni bir tablo. Ama callback sırasında az entity eklendiyse,
+   -- sonraki tick'te self._reconsidered_entities küçük kalır.
+   -- Gerçek kazanç callback snapshot reuse ve closure eliminasyonunda.
 
    if _instrumentation then
       _instrumentation:inc('perfmod:reconsider_alloc_ticks')
@@ -181,8 +181,8 @@ local function _patched_call_reconsider_callbacks(self)
    end
 end
 
--- ??? Patched on_reconsider_entity ????????????????????????????????????????
--- Orijinali wrap eder, callback eklendi?inde/silindi?inde dirty flag set eder.
+-- ─── Patched on_reconsider_entity ────────────────────────────────────────
+-- Orijinali wrap eder, callback eklendiğinde/silindiğinde dirty flag set eder.
 local function _patched_on_reconsider_entity(self, reason, callback)
    local id = self._next_reconsider_callback_id
    self._next_reconsider_callback_id = self._next_reconsider_callback_id + 1
@@ -200,13 +200,13 @@ local function _patched_on_reconsider_entity(self, reason, callback)
    end)
 end
 
--- ??? Apply / Restore ?????????????????????????????????????????????????????
+-- ─── Apply / Restore ─────────────────────────────────────────────────────
 function M.apply(config)
    if _patched then
       return true
    end
 
-   -- Config'den ayarlar? al
+   -- Config'den ayarları al
    if config then
       _max_per_tick = config.max_reconsider_per_tick or 64
       _instrumentation = config.instrumentation
@@ -223,14 +223,14 @@ function M.apply(config)
       ai_service._call_reconsider_callbacks = _patched_call_reconsider_callbacks
       ai_service.on_reconsider_entity = _patched_on_reconsider_entity
 
-      -- ?lk callback snapshot'? build et
+      -- İlk callback snapshot'ı build et
       _rebuild_callback_snapshot(ai_service)
 
       _patched = true
    end)
 
    if not ok then
-      log:error('PATCH 1 (reconsider_alloc) failed: %s ? falling back to original', tostring(err))
+      log:error('PATCH 1 (reconsider_alloc) failed: %s — falling back to original', tostring(err))
       M.restore()
       return false
    end

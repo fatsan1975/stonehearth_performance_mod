@@ -57,4 +57,33 @@ function PerfModCallHandler:set_instrumentation_command(session, response, value
    response:resolve({ ok = true })
 end
 
+function PerfModCallHandler:get_instrumentation_snapshot(session, response)
+   local mod = _get_mod()
+   if not mod or not mod.get_instrumentation_snapshot then
+      response:resolve({})
+      return
+   end
+   response:resolve(mod:get_instrumentation_snapshot())
+end
+
+function PerfModCallHandler:dump_instrumentation(session, response)
+   local mod = _get_mod()
+   if not mod or not mod.dump_instrumentation then
+      response:resolve({})
+      return
+   end
+   local snap = mod:dump_instrumentation()
+   response:resolve(snap or {})
+end
+
+function PerfModCallHandler:reset_counters(session, response)
+   local mod = _get_mod()
+   if not mod or not mod.reset_counters then
+      response:reject({ error = 'service_not_available' })
+      return
+   end
+   mod:reset_counters()
+   response:resolve({ ok = true })
+end
+
 return PerfModCallHandler

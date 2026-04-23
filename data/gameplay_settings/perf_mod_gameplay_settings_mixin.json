@@ -3,24 +3,24 @@
     "profile": {
       "type": "list",
       "display_name": "i18n(stonehearth_performance_mod:ui.settings.profile)",
-      "description": "Controls optimization aggressiveness. Balanced is recommended for most players.",
+      "description": "i18n(stonehearth_performance_mod:ui.settings.profile_description)",
       "default": "BALANCED",
       "ordinal": 1,
       "values": {
         "SAFE": {
           "ordinal": 1,
           "display_name": "i18n(stonehearth_performance_mod:ui.settings.profiles.safe)",
-          "description": "Conservative settings. Larger entity spread limit, longer cache flush intervals."
+          "description": "i18n(stonehearth_performance_mod:ui.settings.profiles.safe_description)"
         },
         "BALANCED": {
           "ordinal": 2,
           "display_name": "i18n(stonehearth_performance_mod:ui.settings.profiles.balanced)",
-          "description": "Moderate optimization. Good for most colonies."
+          "description": "i18n(stonehearth_performance_mod:ui.settings.profiles.balanced_description)"
         },
         "AGGRESSIVE": {
           "ordinal": 3,
           "display_name": "i18n(stonehearth_performance_mod:ui.settings.profiles.aggressive)",
-          "description": "Maximum optimization. Tighter entity spread, shorter cache flush. For large towns."
+          "description": "i18n(stonehearth_performance_mod:ui.settings.profiles.aggressive_description)"
         }
       },
       "on_change": {
@@ -30,8 +30,8 @@
     "instrumentation_enabled": {
       "type": "boolean",
       "display_name": "i18n(stonehearth_performance_mod:ui.settings.instrumentation)",
-      "description": "Publishes performance counters to the game profiler. Off by default.",
-      "default": false,
+      "description": "i18n(stonehearth_performance_mod:ui.settings.instrumentation_description)",
+      "default": true,
       "ordinal": 2,
       "on_change": {
         "call": "set_instrumentation_command"

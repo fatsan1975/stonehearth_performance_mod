@@ -1,14 +1,14 @@
 -- gc_optimization_patch.lua
--- GC tuning ? sadele?tirilmi? versiyon
+-- GC tuning — sadeleştirilmiş versiyon
 --
 -- Hedefler:
---   1) object_tracker.lua'daki collectgarbage() ? incremental step'e ?evir
---   2) Adaptif GC step: frame y?k?ne g?re boyut ayarla
---   3) Post-spike boost: uzun tick sonras? ekstra GC
---   4) Profil bazl? GC parametreleri
+--   1) object_tracker.lua'daki collectgarbage() → incremental step'e çevir
+--   2) Adaptif GC step: frame yüküne göre boyut ayarla
+--   3) Post-spike boost: uzun tick sonrası ekstra GC
+--   4) Profil bazlı GC parametreleri
 --
 -- NOT: Bu patch allocation AZALDIKTAN SONRA etkili olur.
---   PATCH 1-3 allocation'? d???r?r ? GC tuning daha az i? yapar ? kazan?.
+--   PATCH 1-3 allocation'ı düşürür → GC tuning daha az iş yapar → kazanç.
 
 local log = radiant.log.create_logger('perf_mod:gc')
 
@@ -22,7 +22,7 @@ local _last_heartbeat = nil
 local _was_spiking = false
 local _consecutive_spikes = 0
 
--- ??? Object Tracker collectgarbage() Throttle ????????????????????????????
+-- ─── Object Tracker collectgarbage() Throttle ────────────────────────────
 local function _patch_object_tracker()
    local tracker = nil
    for name, mod in pairs(package.loaded) do
@@ -58,7 +58,7 @@ local function _patch_object_tracker()
    return true
 end
 
--- ??? Adaptif GC Step ?????????????????????????????????????????????????????
+-- ─── Adaptif GC Step ─────────────────────────────────────────────────────
 function M.adaptive_gc_step(profile)
    local now = os.clock()
    local frame_ms = 0
@@ -74,7 +74,7 @@ function M.adaptive_gc_step(profile)
       _consecutive_spikes = _consecutive_spikes + 1
       _was_spiking = true
       if _instrumentation then _instrumentation:inc('perfmod:gc_spike_skips') end
-      return  -- CPU zaten yo?un, GC step yapma
+      return  -- CPU zaten yoğun, GC step yapma
    end
 
    -- Normal frame: GC step yap
@@ -100,13 +100,13 @@ function M.adaptive_gc_step(profile)
    end
 end
 
--- ??? GC Parametreleri Uygula ?????????????????????????????????????????????
+-- ─── GC Parametreleri Uygula ─────────────────────────────────────────────
 function M.apply_gc_params(profile)
    pcall(collectgarbage, 'setpause', profile.gc_pause or 110)
    pcall(collectgarbage, 'setstepsize', profile.gc_stepsize or 100)
 end
 
--- ??? Apply / Restore ?????????????????????????????????????????????????????
+-- ─── Apply / Restore ─────────────────────────────────────────────────────
 function M.apply(config)
    if _patched then
       return true

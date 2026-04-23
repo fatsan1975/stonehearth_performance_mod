@@ -3,11 +3,11 @@
     "name" : "Performance Mod for ACE Stonehearth",
     "namespace" : "stonehearth_performance_mod",
     "version" : 3,
-    "mod_version" : 310,
-    "steam_file_id" : ""
+    "mod_version" : 400,
+    "steam_file_id" : "3669297036"
   },
   "author": "Fatih1975",
-  "description": "Surgical performance optimizations for ACE Stonehearth: allocation elimination, URI-based filter fast-reject, reconsider cascade limiter, and adaptive GC tuning.",
+  "description": "Massive performance upgrade for ACE Stonehearth: dedup-first reconsider cascade, URI fast-reject cache, adaptive GC tuning, restock/events coalescing, hearthling-idle watchdog, runtime-configurable safety with circuit breaker.",
   "default_locale": "en",
   "dependencies": [
     "stonehearth",
@@ -21,6 +21,18 @@
       "endpoint": "server"
     },
     "stonehearth_performance_mod:update_settings": {
+      "controller": "file(scripts/perf_mod/call_handler.lua)",
+      "endpoint": "server"
+    },
+    "stonehearth_performance_mod:get_instrumentation_snapshot": {
+      "controller": "file(scripts/perf_mod/call_handler.lua)",
+      "endpoint": "server"
+    },
+    "stonehearth_performance_mod:dump_instrumentation": {
+      "controller": "file(scripts/perf_mod/call_handler.lua)",
+      "endpoint": "server"
+    },
+    "stonehearth_performance_mod:reset_counters": {
       "controller": "file(scripts/perf_mod/call_handler.lua)",
       "endpoint": "server"
     },

@@ -1,5 +1,5 @@
 -- settings.lua
--- Mod ayarlar? y?netimi ? sadele?tirilmi? versiyon
+-- Mod ayarları yönetimi — sadeleştirilmiş versiyon
 
 local Config = require 'scripts.perf_mod.config'
 

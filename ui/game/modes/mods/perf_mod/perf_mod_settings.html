@@ -3,15 +3,75 @@
       <h2>{{i18n 'stonehearth_performance_mod:ui.settings.title'}}</h2>
       <p>{{i18n 'stonehearth_performance_mod:ui.settings.description'}}</p>
 
-      <label>{{i18n 'stonehearth_performance_mod:ui.settings.profile'}}</label>
-      <select id="perfmodProfile">
-         <option value="SAFE">{{i18n 'stonehearth_performance_mod:ui.settings.profiles.safe'}}</option>
-         <option value="BALANCED">{{i18n 'stonehearth_performance_mod:ui.settings.profiles.balanced'}}</option>
-         <option value="AGGRESSIVE">{{i18n 'stonehearth_performance_mod:ui.settings.profiles.aggressive'}}</option>
-      </select>
+      <div class="perfmod-section">
+         <label>{{i18n 'stonehearth_performance_mod:ui.settings.profile'}}</label>
+         <select id="perfmodProfile">
+            <option value="SAFE">{{i18n 'stonehearth_performance_mod:ui.settings.profiles.safe'}}</option>
+            <option value="BALANCED">{{i18n 'stonehearth_performance_mod:ui.settings.profiles.balanced'}}</option>
+            <option value="AGGRESSIVE">{{i18n 'stonehearth_performance_mod:ui.settings.profiles.aggressive'}}</option>
+         </select>
 
-      <label><input type="checkbox" id="perfmodInstrumentation"/> {{i18n 'stonehearth_performance_mod:ui.settings.instrumentation'}}</label>
+         <label><input type="checkbox" id="perfmodInstrumentation"/> {{i18n 'stonehearth_performance_mod:ui.settings.instrumentation'}}</label>
 
-      <button {{action 'saveSettings'}}>{{i18n 'stonehearth_performance_mod:ui.settings.save'}}</button>
+         <button {{action 'saveSettings'}}>{{i18n 'stonehearth_performance_mod:ui.settings.save'}}</button>
+      </div>
+
+      <hr/>
+
+      <div class="perfmod-section">
+         <h3>{{i18n 'stonehearth_performance_mod:ui.settings.panel.header'}}</h3>
+         <div class="perfmod-status">
+            <div><strong>{{i18n 'stonehearth_performance_mod:ui.settings.panel.version'}}:</strong> {{settings.version}}</div>
+            <div><strong>{{i18n 'stonehearth_performance_mod:ui.settings.panel.profile'}}:</strong> {{settings.profile}}</div>
+            <div><strong>{{i18n 'stonehearth_performance_mod:ui.settings.panel.ace_present'}}:</strong> {{settings.ace_present}}</div>
+            <div><strong>{{i18n 'stonehearth_performance_mod:ui.settings.panel.active_patches'}}:</strong> {{appliedPatchesStr}}</div>
+            <div><strong>{{i18n 'stonehearth_performance_mod:ui.settings.panel.heartbeat'}}:</strong> {{settings.heartbeat_count}}</div>
+         </div>
+      </div>
+
+      <div class="perfmod-section">
+         <h3>{{i18n 'stonehearth_performance_mod:ui.settings.panel.counters_header'}}</h3>
+         <table class="perfmod-counter-table">
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.reject_hits'}}</td><td>{{counters.PA_reject_hits}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.caches_added'}}</td><td>{{counters.PA_caches_added}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.dedup_sweeps_saved'}}</td><td>{{counters.PB_dedup_sweeps_saved}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.first_adds'}}</td><td>{{counters.PB_first_adds}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.dedup_hits'}}</td><td>{{counters.P3_dedup_hits}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.throttle_hits'}}</td><td>{{counters.PC_throttle_hits}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.spread_defers'}}</td><td>{{counters.P1_spread_defers}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.adaptive_steps'}}</td><td>{{counters.GC_adaptive_steps}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.spike_skips'}}</td><td>{{counters.GC_spike_skips}}</td></tr>
+            <tr class="sep"><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.watchdog_ratio'}}</td><td>{{counters.SAFETY_last_idle_ratio_pct}}%</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.watchdog_fires'}}</td><td>{{counters.SAFETY_watchdog_fires}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.circuit_breaker_trips'}}</td><td>{{counters.SAFETY_circuit_breaker_trips}}</td></tr>
+         </table>
+
+         <div class="perfmod-actions">
+            <button {{action 'resetCounters'}}>{{i18n 'stonehearth_performance_mod:ui.settings.panel.reset_button'}}</button>
+            <button {{action 'dumpCounters'}}>{{i18n 'stonehearth_performance_mod:ui.settings.panel.dump_button'}}</button>
+         </div>
+      </div>
+
+      <div class="perfmod-section">
+         <h3>{{i18n 'stonehearth_performance_mod:ui.settings.panel.patches_header'}}</h3>
+         <div class="perfmod-patches">
+            <label><input type="checkbox" data-patch="P1" {{bind-attr checked=patchEnabled.P1}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_P1'}}</label>
+            <label><input type="checkbox" data-patch="PA" {{bind-attr checked=patchEnabled.PA}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_PA'}}</label>
+            <label><input type="checkbox" data-patch="PB" {{bind-attr checked=patchEnabled.PB}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_PB'}}</label>
+            <label><input type="checkbox" data-patch="P3" {{bind-attr checked=patchEnabled.P3}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_P3'}}</label>
+            <label><input type="checkbox" data-patch="PC" {{bind-attr checked=patchEnabled.PC}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_PC'}}</label>
+            <label><input type="checkbox" data-patch="PD" {{bind-attr checked=patchEnabled.PD}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_PD'}}</label>
+            <label><input type="checkbox" data-patch="PE" {{bind-attr checked=patchEnabled.PE}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_PE'}}</label>
+            <label><input type="checkbox" data-patch="GC" {{bind-attr checked=patchEnabled.GC}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_GC'}}</label>
+            <button {{action 'applyPatchToggles'}}>{{i18n 'stonehearth_performance_mod:ui.settings.save'}}</button>
+         </div>
+      </div>
+
+      <div class="perfmod-section">
+         <h3>{{i18n 'stonehearth_performance_mod:ui.settings.panel.watchdog_threshold'}}</h3>
+         <input type="range" id="perfmodWatchdogThreshold" min="0.3" max="0.95" step="0.05" value="0.6"/>
+         <span id="perfmodWatchdogValue">60%</span>
+         <button {{action 'applyWatchdogThreshold'}}>{{i18n 'stonehearth_performance_mod:ui.settings.save'}}</button>
+      </div>
    </div>
 </script>

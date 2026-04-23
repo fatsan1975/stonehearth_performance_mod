@@ -7,7 +7,7 @@
 
 local log = radiant.log.create_logger('perf_mod_service')
 
--- Config pure table, class() kullanmiyor ? top-level safe
+-- Config pure table, class() kullanmiyor — top-level safe
 local Config = require 'scripts.perf_mod.config'
 
 local PerfModService = class()
@@ -39,10 +39,10 @@ function PerfModService:get()
 end
 
 function PerfModService:initialize()
-   -- 1) Lazy module loading ? hepsi pcall ile korunuyor
+   -- 1) Lazy module loading — hepsi pcall ile korunuyor
    local modules_ok = self:_load_modules()
    if not modules_ok then
-      log:error('perf_mod: Critical modules failed to load ? aborting')
+      log:error('perf_mod: Critical modules failed to load — aborting')
       return
    end
 
@@ -67,12 +67,12 @@ function PerfModService:initialize()
       self:_start_heartbeat()
       self:_log_startup_summary()
    else
-      log:warning('perf_mod: stonehearth.ai not ready at init ? deferring patch application...')
+      log:warning('perf_mod: stonehearth.ai not ready at init — deferring patch application...')
       self:_defer_patch_application()
    end
 end
 
--- ??? Module Loading ??????????????????????????????????????????????????????
+-- ─── Module Loading ──────────────────────────────────────────────────────
 
 function PerfModService:_load_modules()
    local all_ok = true
@@ -107,7 +107,7 @@ function PerfModService:_load_modules()
    return all_ok
 end
 
--- ??? stonehearth.ai Readiness ????????????????????????????????????????????
+-- ─── stonehearth.ai Readiness ────────────────────────────────────────────
 
 function PerfModService:_check_ai_service_ready()
    if not stonehearth then return false end
@@ -120,15 +120,15 @@ function PerfModService:_check_ai_service_ready()
 end
 
 function PerfModService:_defer_patch_application()
-   -- Kisa bir timer ile tekrar dene ? stonehearth.ai birka? ms icinde hazir olacak
+   -- Kisa bir timer ile tekrar dene — stonehearth.ai birkaç ms icinde hazir olacak
    local retry_count = 0
-   local max_retries = 50  -- 50 ? 100ms = 5 saniye max bekleme
+   local max_retries = 50  -- 50 × 100ms = 5 saniye max bekleme
 
    local function _try_apply()
       retry_count = retry_count + 1
 
       if self:_check_ai_service_ready() then
-         log:always('perf_mod: stonehearth.ai ready after %d retries ? applying patches', retry_count)
+         log:always('perf_mod: stonehearth.ai ready after %d retries — applying patches', retry_count)
          self:_apply_patches()
          self:_apply_gc_tuning()
          self:_start_heartbeat()
@@ -141,10 +141,10 @@ function PerfModService:_defer_patch_application()
          if radiant and radiant.set_realtime_timer then
             radiant.set_realtime_timer('perf_mod_retry_' .. retry_count, 100, _try_apply)
          else
-            log:error('perf_mod: Cannot retry ? radiant.set_realtime_timer not available')
+            log:error('perf_mod: Cannot retry — radiant.set_realtime_timer not available')
          end
       else
-         log:error('perf_mod: stonehearth.ai not ready after %d retries ? patches NOT applied', max_retries)
+         log:error('perf_mod: stonehearth.ai not ready after %d retries — patches NOT applied', max_retries)
          -- Heartbeat'i yine baslat (GC tuning icin)
          self:_apply_gc_tuning()
          self:_start_heartbeat()
@@ -155,7 +155,7 @@ function PerfModService:_defer_patch_application()
    _try_apply()
 end
 
--- ??? ACE Detection ???????????????????????????????????????????????????????
+-- ─── ACE Detection ───────────────────────────────────────────────────────
 
 function PerfModService:_detect_ace()
    self._ace_present = false
@@ -164,7 +164,7 @@ function PerfModService:_detect_ace()
    end
 end
 
--- ??? Patch Application ??????????????????????????????????????????????????
+-- ─── Patch Application ──────────────────────────────────────────────────
 
 function PerfModService:_apply_patches()
    local profile = self:get_profile_data()
@@ -232,7 +232,7 @@ function PerfModService:_apply_gc_tuning()
    end
 end
 
--- ??? Heartbeat ???????????????????????????????????????????????????????????
+-- ─── Heartbeat ───────────────────────────────────────────────────────────
 
 function PerfModService:_start_heartbeat()
    -- Oncelik: stonehearth.calendar (game tick ile senkron)
@@ -251,7 +251,7 @@ function PerfModService:_start_heartbeat()
       return
    end
 
-   log:warning('perf_mod: No heartbeat scheduler available ? tick-level flush disabled')
+   log:warning('perf_mod: No heartbeat scheduler available — tick-level flush disabled')
 end
 
 function PerfModService:_on_heartbeat_tick()
@@ -291,7 +291,7 @@ function PerfModService:_on_heartbeat_tick()
    end
 end
 
--- ??? Startup Summary ?????????????????????????????????????????????????????
+-- ─── Startup Summary ─────────────────────────────────────────────────────
 
 function PerfModService:_log_startup_summary()
    local profile = self._settings:get().profile or 'BALANCED'
@@ -309,7 +309,7 @@ function PerfModService:_log_startup_summary()
    log:always('=======================================================')
 end
 
--- ??? Destroy ?????????????????????????????????????????????????????????????
+-- ─── Destroy ─────────────────────────────────────────────────────────────
 
 function PerfModService:destroy()
    if self._heartbeat then
@@ -326,7 +326,7 @@ function PerfModService:destroy()
    if ReconsiderLimiterPatch then pcall(ReconsiderLimiterPatch.restore) end
 end
 
--- ??? Public API ??????????????????????????????????????????????????????????
+-- ─── Public API ──────────────────────────────────────────────────────────
 
 function PerfModService:get_profile_data()
    local profile_name = self._settings and self._settings:get().profile or 'BALANCED'
@@ -352,7 +352,7 @@ function PerfModService:update_settings(data)
          GcOptimization.apply_gc_params(profile)
       end
 
-      log:always('perf_mod: settings updated ? profile=%s', self._settings:get().profile)
+      log:always('perf_mod: settings updated — profile=%s', self._settings:get().profile)
       return true
    end
    return false

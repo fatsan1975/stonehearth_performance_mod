@@ -1,26 +1,26 @@
 -- filter_fast_reject_patch.lua
--- PATCH 2: URI-bazl? negatif sonu? cache (fast-reject)
+-- PATCH 2: URI-bazlı negatif sonuç cache (fast-reject)
 --
 -- Sorun:
---   _filter_passes her entity i?in C++ boundary crossing yap?yor:
---     is_valid ? get_player_id ? get_component ? get_uri ? catalog ? material
---   Ayn? URI'ye sahip 50 kereste ? 50 kez ayn? expensive kontroller.
---   ACE'nin filter_materials_uris cache'i sadece material matching ad?m?n? cache'liyor,
---   ?nceki 4 ad?m (is_valid, player_id, entity_forms, ghost_form) her seferinde tekrarlan?yor.
+--   _filter_passes her entity için C++ boundary crossing yapıyor:
+--     is_valid → get_player_id → get_component → get_uri → catalog → material
+--   Aynı URI'ye sahip 50 kereste → 50 kez aynı expensive kontroller.
+--   ACE'nin filter_materials_uris cache'i sadece material matching adımını cache'liyor,
+--   önceki 4 adım (is_valid, player_id, entity_forms, ghost_form) her seferinde tekrarlanıyor.
 --
--- ??z?m:
---   filter_from_key'i wrap ederek her filter fonksiyonunun ?n?ne URI-bazl?
+-- Çözüm:
+--   filter_from_key'i wrap ederek her filter fonksiyonunun önüne URI-bazlı
 --   negatif cache ekliyoruz. "Basit entity" (entity_forms yok, ghost_form yok)
---   i?in: player_id + URI ? deterministik sonu?.
---   Sadece NEGAT?F sonu?lar cache'lenir ? pozitif sonu? dinamik fakt?rlere
---   (konum, eri?ilebilirlik) ba?l? olabilir.
+--   için: player_id + URI → deterministik sonuç.
+--   Sadece NEGATİF sonuçlar cache'lenir — pozitif sonuç dinamik faktörlere
+--   (konum, erişilebilirlik) bağlı olabilir.
 --
 -- Invalidation:
---   - reconsider_entity ?a?r?ld???nda entity URI'si t?m cache'lerden silinir
+--   - reconsider_entity çağrıldığında entity URI'si tüm cache'lerden silinir
 --   - Periyodik full flush (her N tick)
 --
--- G?venlik:
---   - Cache miss = orijinal _filter_passes ?a?r?l?r, sonu? her zaman do?ru
+-- Güvenlik:
+--   - Cache miss = orijinal _filter_passes çağrılır, sonuç her zaman doğru
 --   - Sadece false cache'lenir, true asla cache'lenmez
 --   - Kill-switch: config.patches.filter_fast_reject
 
@@ -33,13 +33,13 @@ local _patched = false
 local _original_filter_from_key = nil
 local _original_add_reconsidered_entity = nil
 
--- Her filter_fn i?in ayr? URI reject tablosu
+-- Her filter_fn için ayrı URI reject tablosu
 -- _reject_caches[filter_fn] = { ["player_id:uri"] = true }
 local _reject_caches = {}
 
--- T?m aktif wrapped filter'lar (invalidation i?in)
-local _wrapped_filters = {}  -- wrapped_fn ? original_fn mapping
-local _filter_to_reject = {} -- original_fn ? reject_cache mapping
+-- Tüm aktif wrapped filter'lar (invalidation için)
+local _wrapped_filters = {}  -- wrapped_fn → original_fn mapping
+local _filter_to_reject = {} -- original_fn → reject_cache mapping
 
 -- Instrumentation
 local _instrumentation = nil
@@ -48,9 +48,9 @@ local _instrumentation = nil
 local _tick_count = 0
 local _flush_interval = 400  -- Her 400 tick (~20s) full flush
 
--- ??? URI Reject Cache Y?netimi ???????????????????????????????????????????
+-- ─── URI Reject Cache Yönetimi ───────────────────────────────────────────
 
--- Entity URI'sini t?m reject cache'lerden sil (invalidation)
+-- Entity URI'sini tüm reject cache'lerden sil (invalidation)
 local function _invalidate_entity_uri(entity)
    -- Entity'den URI al
    local ok, uri = pcall(entity.get_uri, entity)
@@ -64,7 +64,7 @@ local function _invalidate_entity_uri(entity)
 
    local key = player_id .. ':' .. uri
 
-   -- T?m reject cache'lerden bu key'i sil
+   -- Tüm reject cache'lerden bu key'i sil
    for _, cache in pairs(_reject_caches) do
       if rawget(cache, key) then
          rawset(cache, key, nil)
@@ -72,28 +72,28 @@ local function _invalidate_entity_uri(entity)
    end
 end
 
--- ??? Filter Wrapper ??????????????????????????????????????????????????????
--- Orijinal filter_fn'in ?n?ne URI reject kontrol? ekler.
+-- ─── Filter Wrapper ──────────────────────────────────────────────────────
+-- Orijinal filter_fn'in önüne URI reject kontrolü ekler.
 local function _create_wrapped_filter(original_filter_fn)
-   -- Bu filter i?in reject cache
+   -- Bu filter için reject cache
    local reject_cache = {}
    _reject_caches[original_filter_fn] = reject_cache
 
    local get_player_id = radiant.entities.get_player_id
 
    local function wrapped_filter(entity)
-      -- H?zl? validity check
+      -- Hızlı validity check
       if not entity or not entity:is_valid() then
          return false
       end
 
-      -- "Basit entity" kontrol?: entity_forms varsa bypass (recursive call yap?yor)
-      -- entity_forms check'i ucuz de?il (C++ boundary) ama reject cache hit
-      -- ?ok daha fazla ?a?r?y? kurtar?r.
-      -- Strateji: ?nce URI + player_id ile reject cache'e bak.
-      -- Cache hit ? h?zl? false. Cache miss ? orijinal fonksiyona devret.
+      -- "Basit entity" kontrolü: entity_forms varsa bypass (recursive call yapıyor)
+      -- entity_forms check'i ucuz değil (C++ boundary) ama reject cache hit
+      -- çok daha fazla çağrıyı kurtarır.
+      -- Strateji: Önce URI + player_id ile reject cache'e bak.
+      -- Cache hit → hızlı false. Cache miss → orijinal fonksiyona devret.
 
-      -- URI al (C++ boundary ama tek bir ?a?r?)
+      -- URI al (C++ boundary ama tek bir çağrı)
       local entity_uri = entity:get_uri()
 
       -- Player ID al
@@ -104,7 +104,7 @@ local function _create_wrapped_filter(original_filter_fn)
 
       local cache_key = item_player_id .. ':' .. entity_uri
 
-      -- Reject cache hit ? h?zl? false d?n
+      -- Reject cache hit → hızlı false dön
       if rawget(reject_cache, cache_key) then
          if _instrumentation then
             _instrumentation:inc('perfmod:uri_reject_hits')
@@ -112,15 +112,15 @@ local function _create_wrapped_filter(original_filter_fn)
          return false
       end
 
-      -- Cache miss ? orijinal filter'? ?a??r
+      -- Cache miss → orijinal filter'ı çağır
       local result = original_filter_fn(entity)
 
-      -- Sadece NEGAT?F sonu?lar? cache'le
-      -- Ek g?venlik: entity_forms olan entity'leri cache'leme
-      -- (recursive call yap?yorlar, URI iconic entity'ye ait olabilir)
+      -- Sadece NEGATİF sonuçları cache'le
+      -- Ek güvenlik: entity_forms olan entity'leri cache'leme
+      -- (recursive call yapıyorlar, URI iconic entity'ye ait olabilir)
       if not result then
-         -- entity_forms kontrol? ? bu component varsa cachelemiyoruz
-         -- ??nk? ayn? URI iconic vs root entity farkl? sonu? verebilir
+         -- entity_forms kontrolü — bu component varsa cachelemiyoruz
+         -- çünkü aynı URI iconic vs root entity farklı sonuç verebilir
          local efc = entity:get_component('stonehearth:entity_forms')
          if not efc then
             rawset(reject_cache, cache_key, true)
@@ -139,19 +139,19 @@ local function _create_wrapped_filter(original_filter_fn)
    return wrapped_filter
 end
 
--- ??? Patched filter_from_key ?????????????????????????????????????????????
--- filter_from_key ayn? filter_key i?in ayn? filter_fn d?nd?r?r.
--- Biz sadece YEN? filter'lar olu?turuldu?unda wrap ekliyoruz.
+-- ─── Patched filter_from_key ─────────────────────────────────────────────
+-- filter_from_key aynı filter_key için aynı filter_fn döndürür.
+-- Biz sadece YENİ filter'lar oluşturulduğunda wrap ekliyoruz.
 local function _patched_filter_from_key(self, namespace, filter_key, filter_impl_fn)
    local ns = rawget(self._all_filters_ref or {}, namespace)
 
-   -- Orijinal filter_from_key mant???n? takip et
-   -- AMA: ALL_FILTERS file-local oldu?u i?in do?rudan eri?emiyoruz.
-   -- ??z?m: Orijinal fonksiyonu ?a??r, ama filter_impl_fn'i wrap edilmi? versiyonla de?i?tir.
+   -- Orijinal filter_from_key mantığını takip et
+   -- AMA: ALL_FILTERS file-local olduğu için doğrudan erişemiyoruz.
+   -- Çözüm: Orijinal fonksiyonu çağır, ama filter_impl_fn'i wrap edilmiş versiyonla değiştir.
 
-   -- filter_impl_fn zaten wrap edilmi? mi kontrol et
+   -- filter_impl_fn zaten wrap edilmiş mi kontrol et
    if _wrapped_filters[filter_impl_fn] then
-      -- Zaten wrapped, orijinalden ge?ir
+      -- Zaten wrapped, orijinalden geçir
       return _original_filter_from_key(self, namespace, filter_key, filter_impl_fn)
    end
 
@@ -162,19 +162,19 @@ local function _patched_filter_from_key(self, namespace, filter_key, filter_impl
    return _original_filter_from_key(self, namespace, filter_key, wrapped)
 end
 
--- ??? Patched _add_reconsidered_entity ????????????????????????????????????
--- Entity reconsider edildi?inde URI'sini reject cache'lerden sil.
--- PATCH 3 ile birle?ik: FAST_CALL_CACHES temizleme batch'e ta??n?r.
+-- ─── Patched _add_reconsidered_entity ────────────────────────────────────
+-- Entity reconsider edildiğinde URI'sini reject cache'lerden sil.
+-- PATCH 3 ile birleşik: FAST_CALL_CACHES temizleme batch'e taşınır.
 local function _patched_add_reconsidered_entity(self, entity, reason)
-   -- ?nce URI reject invalidation
+   -- Önce URI reject invalidation
    _invalidate_entity_uri(entity)
 
-   -- Sonra orijinal davran??
+   -- Sonra orijinal davranış
    return _original_add_reconsidered_entity(self, entity, reason)
 end
 
--- ??? Tick flush ??????????????????????????????????????????????????????????
--- Periyodik full cache flush (stale entry birikimi ?nleme)
+-- ─── Tick flush ──────────────────────────────────────────────────────────
+-- Periyodik full cache flush (stale entry birikimi önleme)
 function M.tick()
    _tick_count = _tick_count + 1
    if _tick_count >= _flush_interval then
@@ -192,7 +192,7 @@ function M.flush_all_caches()
    end
 end
 
--- ??? Apply / Restore ?????????????????????????????????????????????????????
+-- ─── Apply / Restore ─────────────────────────────────────────────────────
 function M.apply(config)
    if _patched then
       return true
@@ -218,7 +218,7 @@ function M.apply(config)
    end)
 
    if not ok then
-      log:error('PATCH 2 (filter_fast_reject) failed: %s ? falling back to original', tostring(err))
+      log:error('PATCH 2 (filter_fast_reject) failed: %s — falling back to original', tostring(err))
       M.restore()
       return false
    end
