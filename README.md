@@ -1,4 +1,4 @@
-# Performance Mod for ACE Stonehearth
+# Performance Mod for ACE Stonehearth v400,7
 
 Late-game performance optimization for Stonehearth with the ACE expansion. Cuts simulation CPU load so your town can grow larger before the engine starts choking.
 
