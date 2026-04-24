@@ -38,56 +38,69 @@ end
 -- ═════════════════════════════════════════════════════════════════════════
 
 local PROFILES = {
+   -- gc_step_every_n_hb: we step GC manually only every N heartbeats (not every
+   -- one). Lua's auto-GC (configured via setpause/setstepsize) already runs
+   -- continuously; doing heavy manual steps on top is redundant CPU burn.
+   -- PROFILE TUNING NOTES (v400.7, evidence-based from live profiling):
+   --   * Profile differences are now in WORKLOAD LIMITS (spread, cache flush)
+   --     and which *experimental* patches are enabled, NOT in GC aggressiveness.
+   --   * AGGRESSIVE in v400.5 had gc_pause=105, gc_step_every_n_hb=3 which
+   --     caused lua_gc to SPIKE from 21% (SAFE) to 35% (AGGRESSIVE) due to
+   --     over-frequent GC cycles on top of Lua's already-aggressive auto-GC.
+   --   * v400.7 uses a single well-tuned GC baseline across profiles.
+   --   * PD (restock throttle) is DISABLED globally — the RestockDirector
+   --     class has no tickable update method (event-driven design), so the
+   --     patch cannot work as originally specified.
    SAFE = {
       id = 'SAFE',
       reconsider_alloc = true,
       filter_fast_reject = true,
-      dedup_first = true,
+      dedup_first = false,
       reconsider_limiter = true,
       gc_tuning = true,
-      restock_throttle = false,
-      contents_coalesce = false,
+      restock_throttle = false,         -- PD unavailable (see note)
+      contents_coalesce = true,
       max_reconsider_per_tick = 80,
       reject_flush_interval = 400,
-      gc_pause = 120,
+      gc_pause = 140,
       gc_stepsize = 80,
+      gc_step_every_n_hb = 10,
       post_spike_steps = 1,
-      spike_threshold_ms = 80,
       restock_throttle_ms = 150,
    },
    BALANCED = {
       id = 'BALANCED',
       reconsider_alloc = true,
       filter_fast_reject = true,
-      dedup_first = true,
+      dedup_first = false,
       reconsider_limiter = true,
       gc_tuning = true,
       restock_throttle = false,
-      contents_coalesce = false,
+      contents_coalesce = true,
       max_reconsider_per_tick = 64,
       reject_flush_interval = 300,
-      gc_pause = 110,
-      gc_stepsize = 100,
-      post_spike_steps = 2,
-      spike_threshold_ms = 60,
-      restock_throttle_ms = 100,
+      gc_pause = 140,                    -- same baseline as SAFE (evidence: 21% gc)
+      gc_stepsize = 80,
+      gc_step_every_n_hb = 10,
+      post_spike_steps = 1,
+      restock_throttle_ms = 120,
    },
    AGGRESSIVE = {
       id = 'AGGRESSIVE',
       reconsider_alloc = true,
       filter_fast_reject = true,
-      dedup_first = true,
+      dedup_first = false,
       reconsider_limiter = true,
       gc_tuning = true,
-      restock_throttle = true,
+      restock_throttle = false,          -- PD unavailable
       contents_coalesce = true,
-      max_reconsider_per_tick = 48,
-      reject_flush_interval = 200,
-      gc_pause = 105,
-      gc_stepsize = 120,
-      post_spike_steps = 3,
-      spike_threshold_ms = 50,
-      restock_throttle_ms = 80,
+      max_reconsider_per_tick = 48,      -- tighter spread = smoother bursts
+      reject_flush_interval = 500,       -- LONGER cache lifetime = more hits
+      gc_pause = 140,                    -- same baseline (avoid v400.5 over-GC)
+      gc_stepsize = 80,
+      gc_step_every_n_hb = 10,
+      post_spike_steps = 1,
+      restock_throttle_ms = 100,
    },
 }
 
@@ -305,7 +318,10 @@ do
    local _pa_patched = false
    local _orig_fast_call = nil
 
-   -- URI → false cache (negative results), keyed by filter_fn then 'pid:uri'
+   -- Negative result cache: _uri_reject[filter_fn][player_id][uri] = true
+   -- Nested-table layout (no string concat per call) — eliminates the dominant
+   -- Lua-side garbage source in the PA hot path (was lua_gc driver at 29% in
+   -- v400.4 profiling). Zero-allocation on cache hit.
    local _uri_reject = {}
 
    -- URI → has entity_forms component (cached across entities of same URI)
@@ -315,30 +331,34 @@ do
    local _pa_flush_interval = 300
 
    local get_player_id = radiant.entities.get_player_id
-   local get_component = nil  -- filled lazily to avoid table lookup per call
 
-   -- Hot path. Must be as lean as possible — called 2k-3k times per second in
-   -- late-game colonies. No instrumentation increment for TOTAL invocations
-   -- (too expensive in hot loop). Only count hits/caches.
+   -- Hot path. ~2k calls/sec in a late-game colony. Zero allocation on hit.
    local function _patched_fast_call(self, filter_fn, entity)
       if not entity or not entity:is_valid() then return false end
 
       local uri = entity:get_uri()
       local pid = get_player_id(entity) or ''
 
-      local reject = _uri_reject[filter_fn]
-      if not reject then
-         reject = {}
-         _uri_reject[filter_fn] = reject
+      -- filter_fn -> pid_map
+      local pid_map = _uri_reject[filter_fn]
+      if not pid_map then
+         pid_map = {}
+         _uri_reject[filter_fn] = pid_map
+      end
+      -- pid -> uri_map
+      local uri_map = pid_map[pid]
+      if not uri_map then
+         uri_map = {}
+         pid_map[pid] = uri_map
       end
 
-      local cache_key = pid .. ':' .. uri
-
-      if rawget(reject, cache_key) then
+      -- HIT: fast false return (zero allocations here)
+      if rawget(uri_map, uri) then
          _instrumentation:inc('PA:reject_hits')
          return false
       end
 
+      -- MISS: evaluate and possibly cache negative result
       local result = _orig_fast_call(self, filter_fn, entity)
 
       if not result then
@@ -348,7 +368,7 @@ do
             PA._has_entity_forms[uri] = has_ef
          end
          if not has_ef then
-            rawset(reject, cache_key, true)
+            rawset(uri_map, uri, true)
             _instrumentation:inc('PA:caches_added')
          end
       end
@@ -362,18 +382,22 @@ do
       if not ok or not uri then return end
       local ok2, pid = pcall(get_player_id, entity)
       local player_id = ok2 and pid or ''
-      local key = player_id .. ':' .. uri
 
-      for _, cache in pairs(_uri_reject) do
-         if rawget(cache, key) then
-            rawset(cache, key, nil)
+      -- Walk nested cache: filter_fn -> pid_map -> uri_map
+      for _, pid_map in pairs(_uri_reject) do
+         local uri_map = rawget(pid_map, player_id)
+         if uri_map and rawget(uri_map, uri) then
+            rawset(uri_map, uri, nil)
          end
       end
    end
 
    function PA.flush_all()
-      for _, cache in pairs(_uri_reject) do
-         for k in pairs(cache) do cache[k] = nil end
+      -- Walk nested cache and clear every URI map
+      for _, pid_map in pairs(_uri_reject) do
+         for _, uri_map in pairs(pid_map) do
+            for k in pairs(uri_map) do uri_map[k] = nil end
+         end
       end
       _instrumentation:inc('PA:flushes')
    end
@@ -549,6 +573,28 @@ do
    local _seen_this_tick = {}
    local _container_cache = {}
 
+   -- Interned string cache for reason suffixes. Each reason string from ACE
+   -- (typically 5-10 distinct values) produces at most 2 cached concatenations
+   -- (container + parent). After warmup, zero string allocation in this path.
+   local _reason_container = {}
+   local _reason_parent = {}
+   local function _mk_container_reason(reason)
+      local c = _reason_container[reason]
+      if not c then
+         c = reason .. '(also triggering container)'
+         _reason_container[reason] = c
+      end
+      return c
+   end
+   local function _mk_parent_reason(reason)
+      local c = _reason_parent[reason]
+      if not c then
+         c = reason .. '(reconsider_parent)'
+         _reason_parent[reason] = c
+      end
+      return c
+   end
+
    local function _patched_reconsider(self, entity, reason, reconsider_parent)
       if not entity or not entity:is_valid() then return end
       _instrumentation:inc('P3:reconsider_calls')
@@ -586,7 +632,7 @@ do
                   end
                   if not _seen_this_tick[cid] then
                      _seen_this_tick[cid] = true
-                     self:_add_reconsidered_entity(container, reason .. '(also triggering container)')
+                     self:_add_reconsidered_entity(container, _mk_container_reason(reason))
                   end
                end
             end
@@ -599,7 +645,7 @@ do
             local pid2 = parent:get_id()
             if not _seen_this_tick[pid2] then
                _seen_this_tick[pid2] = true
-               self:_add_reconsidered_entity(parent, reason .. '(reconsider_parent)')
+               self:_add_reconsidered_entity(parent, _mk_parent_reason(reason))
             end
          end
       end
@@ -675,37 +721,30 @@ do
       return true
    end
 
-   -- Heartbeat-paced GC stepping.
-   -- We cannot rely on os.clock in this sandbox (strict.lua), so sub-second
-   -- frame timing is unavailable. Instead we step GC on every 1s heartbeat,
-   -- with a periodic larger cleanup every 10 heartbeats. Combined with the
-   -- setpause/setstepsize tuning in GC.apply_gc_params, this spreads GC work
-   -- over time and prevents full-collection spikes in late-game sessions.
+   -- Light-touch GC helper.
+   -- Lua's auto-GC is already running on our setpause/setstepsize config.
+   -- We add a small MANUAL step only every N heartbeats (profile-driven) so
+   -- the auto-GC isn't the sole actor, without burning CPU on redundant work.
    function GC.adaptive_gc_step(profile)
-      -- Per-heartbeat small step (size matches profile aggressiveness)
-      local step = 1
-      if profile.id == 'BALANCED' then step = 2
-      elseif profile.id == 'AGGRESSIVE' then step = 3
-      end
-      local ok = pcall(collectgarbage, 'step', step)
-      if ok then
-         _instrumentation:inc('GC:adaptive_steps')
-      else
-         _instrumentation:inc('GC:step_errors')
+      local every = profile.gc_step_every_n_hb or 5
+      if every > 0 and _heartbeat_count % every == 0 then
+         local ok = pcall(collectgarbage, 'step', 1)
+         if ok then
+            _instrumentation:inc('GC:adaptive_steps')
+         else
+            _instrumentation:inc('GC:step_errors')
+         end
       end
 
-      -- Periodic larger cleanup every 10 heartbeats
-      if _heartbeat_count % 10 == 0 then
+      -- Periodic larger cleanup every 30 heartbeats
+      if _heartbeat_count % 30 == 0 and _heartbeat_count > 0 then
          for _ = 1, (profile.post_spike_steps or 1) do
             pcall(collectgarbage, 'step', 1)
          end
          _instrumentation:inc('GC:post_spike_boosts')
       end
 
-      -- Warm-resume guard: detect if _last_hb tracking indicates large gap.
-      -- With heartbeat-only timing, a "large gap" means _heartbeat_count
-      -- jumped by > 1 between calls (we skipped heartbeats — game was
-      -- paused/alt-tabbed). Flush caches defensively.
+      -- Warm-resume guard: detect large heartbeat gaps (pause / alt-tab).
       if _last_hb and (_heartbeat_count - _last_hb) > 3 then
          log:always('[perf_mod.safety] warm-resume detected (%d heartbeat gap); flushing caches',
             _heartbeat_count - _last_hb)
@@ -964,39 +1003,22 @@ do
    end
 
    function PD.apply(config)
-      if _pd_patched then return true end
-      local ok, mod = pcall(require, 'stonehearth.services.server.inventory.restock_director')
-      if not ok or type(mod) ~= 'table' then
-         -- Try scanning package.loaded
-         for name, loaded in pairs(package.loaded) do
-            if type(name) == 'string' and name:find('restock_director') and type(loaded) == 'table' then
-               mod = loaded
-               break
-            end
-         end
-         if type(mod) ~= 'table' then
-            log:always('[perf_mod.error] PD: restock_director module not accessible')
-            return false
-         end
-      end
-      _director_mod = mod
-      local candidates = { 'update', '_update', 'on_update', '_on_update', '_on_game_loop' }
-      for _, m in ipairs(candidates) do
-         if type(mod[m]) == 'function' then
-            _director_method_name = m; break
-         end
-      end
-      if not _director_method_name then
-         log:always('[perf_mod.error] PD: no update method found on restock_director')
-         return false
-      end
-      _orig_update = mod[_director_method_name]
-      _throttle_ms = (config and config.restock_throttle_ms) or 100
-      mod[_director_method_name] = _patched_update
-      log:always('[perf_mod.state] PD: restock_director.%s hooked (throttle=%d ms)',
-         _director_method_name, _throttle_ms)
-      _pd_patched = true
-      return true
+      -- PD is disabled by design as of v400.7.
+      --
+      -- Original intent: throttle RestockDirector's periodic update method
+      -- to reduce CPU burn on large storages. Reality: RestockDirector is
+      -- an event-driven class (no update/tick method) — callbacks like
+      -- _on_item_added, _generate_next_errand run on demand, not on timers.
+      -- Throttling event handlers would delay worker task assignment,
+      -- directly risking the "hearthlings go idle" constraint.
+      --
+      -- The "Restock director stuck" log messages the user sees are from
+      -- ACE's own 3-hour watchdog; they are not caused by tick overhead
+      -- and cannot be eliminated by our throttling.
+      --
+      -- Left in place as a no-op so enabling it via UI does not crash.
+      log:always('[perf_mod.state] PD: no-op (RestockDirector is event-driven, no throttle possible)')
+      return false
    end
 
    function PD.is_patched() return _pd_patched end
@@ -1063,30 +1085,32 @@ do
 
    function PE.apply(config)
       if _pe_patched then return true end
+      -- The LIVE StorageComponent class is what instances use (ACE's methods
+      -- have been merged into it by Stonehearth's monkey-patch system at load
+      -- time). Hooking the ACE source table (AceStorageComponent) does NOT
+      -- reach running instances.
       local mod = nil
-      local ok, loaded = pcall(require, 'stonehearth_ace.monkey_patches.ace_storage_component')
+      local ok, loaded = pcall(require, 'stonehearth.components.storage.storage_component')
       if ok and type(loaded) == 'table' then
          mod = loaded
       else
          for name, l in pairs(package.loaded) do
-            if type(name) == 'string' and name:find('ace_storage_component') and type(l) == 'table' then
+            if type(name) == 'string' and name:find('storage_component')
+               and not name:find('ace_') and type(l) == 'table' then
                mod = l
                break
             end
          end
       end
-      if not mod then
-         mod = rawget(_G, 'AceStorageComponent')
-      end
       if type(mod) ~= 'table' or type(mod._on_contents_changed) ~= 'function' then
-         log:always('[perf_mod.error] PE: ace_storage_component._on_contents_changed not found')
+         log:always('[perf_mod.error] PE: live storage_component._on_contents_changed not found')
          return false
       end
       _storage_class = mod
       _orig_contents_changed = mod._on_contents_changed
       mod._on_contents_changed = _patched_contents_changed
       _pe_patched = true
-      log:always('[perf_mod.state] PE: ace_storage_component._on_contents_changed hooked')
+      log:always('[perf_mod.state] PE: StorageComponent._on_contents_changed hooked (live class)')
       return true
    end
 
@@ -1109,14 +1133,11 @@ end
 -- PATCH REGISTRY + RESOLUTION
 -- ═════════════════════════════════════════════════════════════════════════
 
--- Default enablement.
--- PB disabled by default: empirical data (v400.0) showed PB_skip=0 in a 23-hearthling
--- colony because P3's higher-level dedup catches all cascade duplicates first, leaving
--- PB with nothing to skip. User can opt in via update_settings if their workload differs.
-_patch_enabled = {
-   P1 = true, PA = true, PB = false, P3 = true, PC = true,
-   PD = false, PE = false, GC = true,
-}
+-- User-level overrides. Empty by default — profile settings govern.
+-- Set via update_settings { patch_enabled = { PA = false } } to force-disable
+-- a patch regardless of profile, or force-enable an experimental one.
+-- nil in this table means "use profile default".
+_patch_enabled = {}
 
 _get_patch_map = function()
    return {
@@ -1131,11 +1152,16 @@ _get_patch_map = function()
    }
 end
 
+-- Resolution order: explicit user toggle > profile default.
+-- nil in _patch_enabled means "profile default applies".
 _resolve_patch_enabled = function(patch_id, profile)
-   if _patch_enabled[patch_id] == false then return false end
+   local user_toggle = _patch_enabled[patch_id]
+   if user_toggle == true then return true end
+   if user_toggle == false then return false end
+   -- user hasn't set it: fall back to profile default
    if patch_id == 'P1' then return profile.reconsider_alloc ~= false end
    if patch_id == 'PA' then return profile.filter_fast_reject ~= false end
-   if patch_id == 'PB' then return profile.dedup_first ~= false end
+   if patch_id == 'PB' then return profile.dedup_first == true end  -- opt-in (empirically no benefit)
    if patch_id == 'P3' then return profile.reconsider_limiter ~= false end
    if patch_id == 'PC' then return profile.reconsider_limiter ~= false end
    if patch_id == 'PD' then return profile.restock_throttle == true end
@@ -1272,15 +1298,19 @@ local function _on_tick()
    -- 60-second full snapshot
    if _heartbeat_count % 60 == 0 and _heartbeat_count > 0 then
       local s = _counters
-      log:always('[perf_mod.metric] %3ds (total) patches=%d PA_reject=%d PA_cache=%d '
-         .. 'PB_skip=%d PB_add=%d P3_dedup=%d PC_throttle=%d P1_spread=%d '
-         .. 'GC_step=%d GC_skip=%d wd_trips=%d cb_trips=%d',
+      local pe_events = s['PE:contents_events'] or 0
+      local pe_coalesced = s['PE:coalesced'] or 0
+      local pe_pct = pe_events > 0 and math.floor(pe_coalesced / pe_events * 100) or 0
+      log:always('[perf_mod.metric] %3ds (total) patches=%d '
+         .. 'PA_reject=%d PA_cache=%d P3_dedup=%d PC_throttle=%d '
+         .. 'PE_evt=%d PE_coal=%d(%d%%) P1_spread=%d '
+         .. 'GC_step=%d wd_trips=%d cb_trips=%d',
          _heartbeat_count, #_applied_patches,
          s['PA:reject_hits'] or 0, s['PA:caches_added'] or 0,
-         s['PB:dedup_sweeps_saved'] or 0, s['PB:first_adds'] or 0,
          s['P3:dedup_hits'] or 0, s['PC:throttle_hits'] or 0,
+         pe_events, pe_coalesced, pe_pct,
          s['P1:spread_defers'] or 0,
-         s['GC:adaptive_steps'] or 0, s['GC:spike_skips'] or 0,
+         s['GC:adaptive_steps'] or 0,
          s['SAFETY:watchdog_fires'] or 0, s['SAFETY:circuit_breaker_trips'] or 0)
    end
 end
