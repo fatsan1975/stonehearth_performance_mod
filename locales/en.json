@@ -1,19 +1,19 @@
 {
   "ui": {
     "settings": {
-      "title": "Performance Mod v400",
-      "description": "Massive performance optimization: dedup-first reconsider cascade, URI filter fast-reject, adaptive GC, optional restock/events coalescing. Hearthling-idle watchdog guards simulation safety.",
+      "title": "Performance Mod v401",
+      "description": "Massive performance optimization for Stonehearth + ACE. v401 fixes critical hauling/build-pause/workshop bugs while preserving the perf gains. Native multiplayer support. Single-file inline architecture, hearthling-idle watchdog, circuit breaker.",
 
       "profile": "Optimization Profile",
-      "profile_description": "Aggressiveness level. Balanced is recommended. Aggressive adds opt-in experimental patches (restock throttle, events coalescing).",
+      "profile_description": "Aggressiveness level. Balanced is recommended for most colonies. All profiles in v401 use the surgical PE coalesce and the P3-driven PA invalidation chain.",
 
       "profiles": {
         "safe": "Safe",
-        "safe_description": "Conservative settings. Larger entity spread limit, longer cache flush intervals. Watchdog trip target when idle issues detected.",
+        "safe_description": "Conservative settings. Larger entity spread limit. Watchdog trip target when idle issues detected.",
         "balanced": "Balanced (Default)",
         "balanced_description": "Moderate optimization. Good for most colonies 15-20 hearthlings.",
         "aggressive": "Aggressive",
-        "aggressive_description": "Maximum optimization including opt-in experimental patches. For large towns 25+ hearthlings."
+        "aggressive_description": "Maximum optimization. For large towns 25+ hearthlings."
       },
 
       "instrumentation": "Enable Counters",
@@ -30,11 +30,18 @@
         "counters_header": "Counters",
         "reject_hits": "URI rejects (PA)",
         "caches_added": "URI cached (PA)",
+        "cache_size": "PA cache size",
+        "p3_invalidations": "PA invalidations via P3",
         "dedup_sweeps_saved": "Sweeps skipped (PB)",
         "first_adds": "First adds (PB)",
         "dedup_hits": "Reconsider dedups (P3)",
         "throttle_hits": "Cache throttles (PC)",
         "spread_defers": "Entity defers (P1)",
+        "pe_coalesced": "PE coalesced calls",
+        "cancellable_preserved": "PE cancellable preserved (Bug B fix)",
+        "render_variant_preserved": "PE render-variant preserved (Bug C fix)",
+        "ace_event_preserved": "PE ACE-event preserved (Bug C fix)",
+        "undeploy_cmd_preserved": "PE undeploy-cmd preserved",
         "adaptive_steps": "GC steps (GC)",
         "spike_skips": "GC spike skips (GC)",
         "watchdog_ratio": "Hearthling idle ratio",
@@ -46,8 +53,7 @@
         "patch_PB": "PB dedup-first",
         "patch_P3": "P3 reconsider dedup",
         "patch_PC": "PC cache throttle",
-        "patch_PD": "PD restock throttle (experimental)",
-        "patch_PE": "PE contents coalesce (experimental)",
+        "patch_PE": "PE contents coalesce (surgical, v401)",
         "patch_GC": "GC tuning",
         "reset_button": "Reset counters",
         "dump_button": "Dump to log",

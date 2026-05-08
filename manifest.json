@@ -3,11 +3,11 @@
     "name" : "Performance Mod for ACE Stonehearth",
     "namespace" : "stonehearth_performance_mod",
     "version" : 3,
-    "mod_version" : 400,
+    "mod_version" : 401,
     "steam_file_id" : "3669297036"
   },
   "author": "Fatih1975",
-  "description": "Massive performance upgrade for ACE Stonehearth: dedup-first reconsider cascade, URI fast-reject cache, adaptive GC tuning, restock/events coalescing, hearthling-idle watchdog, runtime-configurable safety with circuit breaker.",
+  "description": "Massive performance upgrade for ACE Stonehearth. v401 critical fixes: hauling AI no longer deadlocks (PA cache invalidation rewired), build pause works again, workshops update visually (PE surgical coalesce). Native MP support. Inline single-file architecture, watchdog, circuit breaker, runtime-configurable.",
   "default_locale": "en",
   "dependencies": [
     "stonehearth",
