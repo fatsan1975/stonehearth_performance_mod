@@ -1,11 +1,20 @@
 -- stonehearth_performance_mod_server.lua
--- v400 — Massive Performance Update for Stonehearth + ACE
+-- v401 — Critical bug fixes (hauling, build pause, workshop) + cleanups
 -- All patch code is inline. No `require` for patches. No `class()`. Plain tables.
+--
+-- v401 changes vs v400:
+--   * PA cache invalidation now wired via P3 reconsider chain (Bug A fix:
+--     hauling no longer dies from poisoned URI cache, especially in MP).
+--     PA TTL lowered 300→60 ticks; cache_size now exposed as counter.
+--   * PE _on_contents_changed coalescing made surgical: 4 light state-sync
+--     bits (undeploy_cmd, _update_cancellable, render_variant, ACE event)
+--     ALWAYS run on coalesced calls (Bug B + Bug C fix).
+--   * PD removed (was no-op since v400.7; RestockDirector is event-driven).
 
 stonehearth_performance_mod = {}
 
 local log = radiant.log.create_logger('perf_mod')
-log:always('[perf_mod] v400 server script loaded')
+log:always('[perf_mod] v401 server script loaded')
 
 -- ═════════════════════════════════════════════════════════════════════════
 -- FORWARD DECLARATIONS (filled in later — needed by watchdog/breaker closures)
@@ -48,9 +57,13 @@ local PROFILES = {
    --     caused lua_gc to SPIKE from 21% (SAFE) to 35% (AGGRESSIVE) due to
    --     over-frequent GC cycles on top of Lua's already-aggressive auto-GC.
    --   * v400.7 uses a single well-tuned GC baseline across profiles.
-   --   * PD (restock throttle) is DISABLED globally — the RestockDirector
-   --     class has no tickable update method (event-driven design), so the
-   --     patch cannot work as originally specified.
+   -- v401 NOTES:
+   --   * reject_flush_interval lowered (was 300-500). PA cache invalidation
+   --     is now event-driven via P3 reconsider chain; TTL is a safety net.
+   --     60 ticks (~1 min) bounds worst-case staleness if a state change
+   --     somehow misses the reconsider path.
+   --   * PD (restock throttle) removed entirely in v401 (was no-op since
+   --     v400.7; RestockDirector is event-driven, has no tickable update).
    SAFE = {
       id = 'SAFE',
       reconsider_alloc = true,
@@ -58,15 +71,13 @@ local PROFILES = {
       dedup_first = false,
       reconsider_limiter = true,
       gc_tuning = true,
-      restock_throttle = false,         -- PD unavailable (see note)
       contents_coalesce = true,
       max_reconsider_per_tick = 80,
-      reject_flush_interval = 400,
+      reject_flush_interval = 60,
       gc_pause = 140,
       gc_stepsize = 80,
       gc_step_every_n_hb = 10,
       post_spike_steps = 1,
-      restock_throttle_ms = 150,
    },
    BALANCED = {
       id = 'BALANCED',
@@ -75,15 +86,13 @@ local PROFILES = {
       dedup_first = false,
       reconsider_limiter = true,
       gc_tuning = true,
-      restock_throttle = false,
       contents_coalesce = true,
       max_reconsider_per_tick = 64,
-      reject_flush_interval = 300,
+      reject_flush_interval = 60,
       gc_pause = 140,                    -- same baseline as SAFE (evidence: 21% gc)
       gc_stepsize = 80,
       gc_step_every_n_hb = 10,
       post_spike_steps = 1,
-      restock_throttle_ms = 120,
    },
    AGGRESSIVE = {
       id = 'AGGRESSIVE',
@@ -92,15 +101,13 @@ local PROFILES = {
       dedup_first = false,
       reconsider_limiter = true,
       gc_tuning = true,
-      restock_throttle = false,          -- PD unavailable
       contents_coalesce = true,
       max_reconsider_per_tick = 48,      -- tighter spread = smoother bursts
-      reject_flush_interval = 500,       -- LONGER cache lifetime = more hits
+      reject_flush_interval = 60,
       gc_pause = 140,                    -- same baseline (avoid v400.5 over-GC)
       gc_stepsize = 80,
       gc_step_every_n_hb = 10,
       post_spike_steps = 1,
-      restock_throttle_ms = 100,
    },
 }
 
@@ -120,7 +127,7 @@ local _ace_present = false
 -- ═════════════════════════════════════════════════════════════════════════
 -- INSTRUMENTATION v2
 --   Counter names follow 'GROUP:name' convention.
---   Groups: LIFECYCLE, P1, PA, PB, P3, PC, PD, PE, GC, SAFETY, SETTINGS
+--   Groups: LIFECYCLE, P1, PA, PB, P3, PC, PE, GC, SAFETY, SETTINGS
 -- ═════════════════════════════════════════════════════════════════════════
 
 local _counters = {}
@@ -177,7 +184,7 @@ function _instrumentation:publish_if_available()
    end
 end
 
-local _GROUP_ORDER = { 'P1', 'PA', 'PB', 'P3', 'PC', 'PD', 'PE', 'GC', 'SAFETY' }
+local _GROUP_ORDER = { 'P1', 'PA', 'PB', 'P3', 'PC', 'PE', 'GC', 'SAFETY' }
 
 -- ═════════════════════════════════════════════════════════════════════════
 -- PATCH 1+4: RECONSIDER ALLOC + ENTITY SPREAD
@@ -404,6 +411,17 @@ do
 
    function PA.tick()
       _pa_tick_count = _pa_tick_count + 1
+      -- Periodic cache-size measurement (every 10 ticks ~ 10s) for visibility.
+      -- Walking nested tables every tick would be wasteful in hot path.
+      if (_pa_tick_count % 10) == 0 then
+         local total = 0
+         for _, pid_map in pairs(_uri_reject) do
+            for _, uri_map in pairs(pid_map) do
+               for _ in pairs(uri_map) do total = total + 1 end
+            end
+         end
+         _instrumentation:set('PA:cache_size', total)
+      end
       if _pa_tick_count >= _pa_flush_interval then
          _pa_tick_count = 0
          PA.flush_all()
@@ -412,7 +430,7 @@ do
 
    function PA.apply(config)
       if _pa_patched then return true end
-      _pa_flush_interval = (config and config.reject_flush_interval) or 300
+      _pa_flush_interval = (config and config.reject_flush_interval) or 60
 
       local ai = stonehearth.ai
       if not ai or not ai.fast_call_filter_fn then
@@ -424,6 +442,7 @@ do
       ai.fast_call_filter_fn = _patched_fast_call
 
       _pa_patched = true
+      log:always('[perf_mod.state] PA: hooked + P3 invalidation chain active (TTL=%d)', _pa_flush_interval)
       return true
    end
 
@@ -605,6 +624,20 @@ do
          return
       end
       _seen_this_tick[id] = true
+
+      -- v401: PA cache invalidation chain. PA's negative-result cache holds
+      -- (filter_fn, player_id, uri) → false entries that go stale when item
+      -- state changes (storage capacity, ownership, restock flag). Vanilla
+      -- already calls reconsider_entity in every state-changing code path
+      -- (storage:add_item/remove_item/set_filter — see storage_component.lua
+      -- 430, 478, 483, 632, 637, 647), so wiring invalidation here keeps PA
+      -- cache coherent without requiring PB (which is opt-in/off-by-default).
+      -- Pre-v401 PA invalidation lived only in PB → cache poisoned for 5min,
+      -- hauling AI deadlocked (Bug A, especially MP).
+      if PA and PA._invalidate_entity then
+         PA._invalidate_entity(entity)
+         _instrumentation:inc('PA:p3_invalidations')
+      end
 
       -- self._add_reconsidered_entity goes through PB if PB is patched
       self:_add_reconsidered_entity(entity, reason)
@@ -873,7 +906,7 @@ function _watchdog:_trip()
    self._tripped = true
 
    local patches = _get_patch_map and _get_patch_map() or {}
-   for _, id in ipairs({ 'PE', 'PD', 'PC', 'P3', 'PB', 'PA', 'P1' }) do
+   for _, id in ipairs({ 'PE', 'PC', 'P3', 'PB', 'PA', 'P1' }) do
       if patches[id] and patches[id].is_patched() then
          pcall(patches[id].restore)
          if _patch_enabled then _patch_enabled[id] = false end
@@ -955,96 +988,18 @@ do
 end
 
 -- ═════════════════════════════════════════════════════════════════════════
--- PATCH D: RESTOCK DIRECTOR THROTTLE (EXPERIMENTAL, opt-in)
--- ═════════════════════════════════════════════════════════════════════════
-
-local PD = {}
-do
-   local _pd_patched = false
-   local _director_mod = nil
-   local _director_method_name = nil
-   local _orig_update = nil
-   local _throttle_ms = 100
-   local _last_call = {}
-   local _deferred_timer = {}
-
-   local function _patched_update(self, ...)
-      local now = _safe_clock() * 1000
-      local last = _last_call[self]
-      if last and (now - last) < _throttle_ms then
-         if not _deferred_timer[self] and radiant.set_realtime_timer then
-            local cap_self = self
-            _deferred_timer[cap_self] = radiant.set_realtime_timer(
-               'perf_mod_pd_' .. tostring(cap_self):gsub('[%s:]', '_'),
-               _throttle_ms,
-               function()
-                  _deferred_timer[cap_self] = nil
-                  _last_call[cap_self] = _safe_clock() * 1000
-                  local ok, err = pcall(_orig_update, cap_self)
-                  if not ok and _breaker and _breaker.record_error then
-                     _breaker:record_error('PD', err)
-                  end
-               end
-            )
-            _instrumentation:inc('PD:throttle_skips')
-         end
-         return
-      end
-      _last_call[self] = now
-      _instrumentation:inc('PD:director_ticks')
-      local ok, ret = pcall(_orig_update, self, ...)
-      if not ok then
-         if _breaker and _breaker.record_error then
-            _breaker:record_error('PD', ret)
-         end
-         return
-      end
-      return ret
-   end
-
-   function PD.apply(config)
-      -- PD is disabled by design as of v400.7.
-      --
-      -- Original intent: throttle RestockDirector's periodic update method
-      -- to reduce CPU burn on large storages. Reality: RestockDirector is
-      -- an event-driven class (no update/tick method) — callbacks like
-      -- _on_item_added, _generate_next_errand run on demand, not on timers.
-      -- Throttling event handlers would delay worker task assignment,
-      -- directly risking the "hearthlings go idle" constraint.
-      --
-      -- The "Restock director stuck" log messages the user sees are from
-      -- ACE's own 3-hour watchdog; they are not caused by tick overhead
-      -- and cannot be eliminated by our throttling.
-      --
-      -- Left in place as a no-op so enabling it via UI does not crash.
-      log:always('[perf_mod.state] PD: no-op (RestockDirector is event-driven, no throttle possible)')
-      return false
-   end
-
-   function PD.is_patched() return _pd_patched end
-
-   function PD.restore()
-      if not _pd_patched then return end
-      if _director_mod and _director_method_name and _orig_update then
-         _director_mod[_director_method_name] = _orig_update
-      end
-      _pd_patched = false
-      _orig_update = nil
-      _director_method_name = nil
-      for k in pairs(_last_call) do _last_call[k] = nil end
-      for k in pairs(_deferred_timer) do _deferred_timer[k] = nil end
-      log:always('[perf_mod.state] PD restored')
-   end
-
-   function PD.set_throttle(ms)
-      if type(ms) == 'number' and ms >= 0 and ms <= 10000 then
-         _throttle_ms = ms
-      end
-   end
-end
-
--- ═════════════════════════════════════════════════════════════════════════
--- PATCH E: _on_contents_changed COALESCING (EXPERIMENTAL, opt-in)
+-- PATCH E: _on_contents_changed SURGICAL COALESCE (v401)
+--
+-- v400 behaviour: coalesced 2nd-call entirely → dropped these critical bits
+-- (cause of build-pause + workshop-update bugs):
+--   * _update_cancellable()       (Bug B: build/move pause flag)
+--   * render_info:set_model_variant() (Bug C: workshop visual update)
+--   * universal_storage:storage_contents_changed() (Bug C: ACE cascade)
+--   * commands_component:set_command_enabled() (UI undeploy command state)
+--
+-- v401 behaviour: on coalesce, run those four LIGHT bits manually; only
+-- skip the heavy `drop_all` branch (rare; itself gated; itself triggers
+-- additional _on_contents_changed which would re-enter coalesce anyway).
 -- ═════════════════════════════════════════════════════════════════════════
 
 local PE = {}
@@ -1053,6 +1008,66 @@ do
    local _orig_contents_changed = nil
    local _storage_class = nil
    local _last_tick_fired = {}
+
+   -- Named helpers so the hot-path stays closure-free.
+   local function _do_undeploy_cmd(self, entity)
+      local commands_component = entity:get_component('stonehearth:commands')
+      if not commands_component then return end
+      local empty
+      if type(self.is_undeployable) == 'function' then
+         empty = self:is_undeployable()           -- ACE
+      elseif type(self.is_empty) == 'function' then
+         empty = self:is_empty()                  -- vanilla
+      end
+      if empty ~= nil then
+         commands_component:set_command_enabled(
+            'stonehearth:commands:undeploy_item', empty)
+      end
+   end
+
+   local function _do_render_variant(self, entity)
+      local sv = self._sv
+      if not sv or not sv.filter or not sv.render_filter_model then return end
+      if not self.is_empty or self:is_empty() then return end
+      local capacity = sv.capacity or 0
+      if capacity <= 0 then return end
+      local num_items = sv.num_items or 0
+      local threshold = sv.render_filter_model_threshold or 0
+      local render_info = entity:get_component('render_info')
+      if not render_info then return end
+      if (num_items / capacity) >= threshold then
+         render_info:set_model_variant(tostring(self._cached_filter_key))
+      else
+         render_info:set_model_variant('')
+      end
+   end
+
+   local function _run_light_state_sync(self, entity)
+      -- (1) UI undeploy command toggle
+      if pcall(_do_undeploy_cmd, self, entity) then
+         _instrumentation:inc('PE:undeploy_cmd_preserved')
+      end
+      -- (2) cancellable flag (Bug B fix)
+      if type(self._update_cancellable) == 'function' then
+         if pcall(self._update_cancellable, self) then
+            _instrumentation:inc('PE:cancellable_preserved')
+         end
+      end
+      -- (3) ACE render_info model variant (Bug C visual fix)
+      if pcall(_do_render_variant, self, entity) then
+         _instrumentation:inc('PE:render_variant_preserved')
+      end
+      -- (4) ACE universal_storage event (Bug C cascade fix)
+      if rawget(_G, 'stonehearth_ace')
+         and stonehearth_ace.universal_storage
+         and stonehearth_ace.universal_storage.storage_contents_changed then
+         local is_empty = (self.is_empty and self:is_empty()) or false
+         if pcall(stonehearth_ace.universal_storage.storage_contents_changed,
+                  stonehearth_ace.universal_storage, entity, is_empty) then
+            _instrumentation:inc('PE:ace_event_preserved')
+         end
+      end
+   end
 
    local function _patched_contents_changed(self, ...)
       local entity = self and self._entity
@@ -1067,7 +1082,11 @@ do
       _instrumentation:inc('PE:contents_events')
 
       if _last_tick_fired[id] == _heartbeat_count then
+         -- COALESCED CALL: full handler already ran this tick. Skip the heavy
+         -- drop_all branch but ALWAYS run the light state-sync downstream
+         -- systems depend on (build-pause flag, workshop visual, ACE event).
          _instrumentation:inc('PE:coalesced')
+         _run_light_state_sync(self, entity)
          return
       end
 
@@ -1110,7 +1129,7 @@ do
       _orig_contents_changed = mod._on_contents_changed
       mod._on_contents_changed = _patched_contents_changed
       _pe_patched = true
-      log:always('[perf_mod.state] PE: StorageComponent._on_contents_changed hooked (live class)')
+      log:always('[perf_mod.state] PE: surgical coalesce active (cancellable+render+ACE preserved)')
       return true
    end
 
@@ -1146,7 +1165,6 @@ _get_patch_map = function()
       PB = { apply = PB.apply, restore = PB.restore, is_patched = PB.is_patched },
       P3 = { apply = P3.apply, restore = P3.restore, is_patched = P3.is_patched },
       PC = { apply = PC.apply, restore = PC.restore, is_patched = PC.is_patched },
-      PD = { apply = PD.apply, restore = PD.restore, is_patched = PD.is_patched },
       PE = { apply = PE.apply, restore = PE.restore, is_patched = PE.is_patched },
       GC = { apply = GC.apply, restore = GC.restore, is_patched = GC.is_patched },
    }
@@ -1164,7 +1182,6 @@ _resolve_patch_enabled = function(patch_id, profile)
    if patch_id == 'PB' then return profile.dedup_first == true end  -- opt-in (empirically no benefit)
    if patch_id == 'P3' then return profile.reconsider_limiter ~= false end
    if patch_id == 'PC' then return profile.reconsider_limiter ~= false end
-   if patch_id == 'PD' then return profile.restock_throttle == true end
    if patch_id == 'PE' then return profile.contents_coalesce == true end
    if patch_id == 'GC' then return profile.gc_tuning ~= false end
    return true
@@ -1179,7 +1196,6 @@ local function _cfg_for_profile(profile)
       instrumentation = _instrumentation,
       max_reconsider_per_tick = profile.max_reconsider_per_tick,
       reject_flush_interval = profile.reject_flush_interval,
-      restock_throttle_ms = profile.restock_throttle_ms,
    }
 end
 
@@ -1218,11 +1234,8 @@ local function _apply_patches()
    if _resolve_patch_enabled('P1', profile) then
       _try_apply('P1', P1.apply, cfg, string.format('reconsider alloc + spread (max=%d)', profile.max_reconsider_per_tick))
    end
-   if _resolve_patch_enabled('PD', profile) then
-      _try_apply('PD', PD.apply, cfg, 'restock_director throttle (experimental)')
-   end
    if _resolve_patch_enabled('PE', profile) then
-      _try_apply('PE', PE.apply, cfg, '_on_contents_changed coalescing (experimental)')
+      _try_apply('PE', PE.apply, cfg, '_on_contents_changed surgical coalesce (v401)')
    end
    if _resolve_patch_enabled('GC', profile) then
       GC.apply_gc_params(profile)
@@ -1359,7 +1372,7 @@ end
 local function _summary()
    local n = #_applied_patches
    log:always('=======================================================')
-   log:always('[perf_mod] v400 | Profile: %s | ACE: %s | Patches: %d/8',
+   log:always('[perf_mod] v401 | Profile: %s | ACE: %s | Patches: %d/7',
       _current_profile, tostring(_ace_present), n)
    for _, name in ipairs(_applied_patches) do
       log:always('[perf_mod]   + %s', name)
@@ -1454,7 +1467,7 @@ function stonehearth_performance_mod:get_settings()
       applied_patches = _applied_patches,
       watchdog_threshold = _watchdog._idle_ratio_threshold,
       ace_present = _ace_present,
-      version = 'v400',
+      version = 'v401',
       heartbeat_count = _heartbeat_count,
    }
 end
@@ -1474,7 +1487,6 @@ function stonehearth_performance_mod:update_settings(data)
       local profile = _get_profile_data()
       GC.apply_gc_params(profile)
       if P1.is_patched() then P1.set_max_per_tick(profile.max_reconsider_per_tick) end
-      if PD.is_patched() then PD.set_throttle(profile.restock_throttle_ms) end
    end
 
    -- Instrumentation toggle

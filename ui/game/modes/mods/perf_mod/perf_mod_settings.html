@@ -34,12 +34,19 @@
          <table class="perfmod-counter-table">
             <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.reject_hits'}}</td><td>{{counters.PA_reject_hits}}</td></tr>
             <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.caches_added'}}</td><td>{{counters.PA_caches_added}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.cache_size'}}</td><td>{{counters.PA_cache_size}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.p3_invalidations'}}</td><td>{{counters.PA_p3_invalidations}}</td></tr>
             <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.dedup_sweeps_saved'}}</td><td>{{counters.PB_dedup_sweeps_saved}}</td></tr>
             <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.first_adds'}}</td><td>{{counters.PB_first_adds}}</td></tr>
             <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.dedup_hits'}}</td><td>{{counters.P3_dedup_hits}}</td></tr>
             <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.throttle_hits'}}</td><td>{{counters.PC_throttle_hits}}</td></tr>
             <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.spread_defers'}}</td><td>{{counters.P1_spread_defers}}</td></tr>
-            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.adaptive_steps'}}</td><td>{{counters.GC_adaptive_steps}}</td></tr>
+            <tr class="sep"><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.pe_coalesced'}}</td><td>{{counters.PE_coalesced}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.cancellable_preserved'}}</td><td>{{counters.PE_cancellable_preserved}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.render_variant_preserved'}}</td><td>{{counters.PE_render_variant_preserved}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.ace_event_preserved'}}</td><td>{{counters.PE_ace_event_preserved}}</td></tr>
+            <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.undeploy_cmd_preserved'}}</td><td>{{counters.PE_undeploy_cmd_preserved}}</td></tr>
+            <tr class="sep"><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.adaptive_steps'}}</td><td>{{counters.GC_adaptive_steps}}</td></tr>
             <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.spike_skips'}}</td><td>{{counters.GC_spike_skips}}</td></tr>
             <tr class="sep"><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.watchdog_ratio'}}</td><td>{{counters.SAFETY_last_idle_ratio_pct}}%</td></tr>
             <tr><td>{{i18n 'stonehearth_performance_mod:ui.settings.panel.watchdog_fires'}}</td><td>{{counters.SAFETY_watchdog_fires}}</td></tr>
@@ -60,7 +67,6 @@
             <label><input type="checkbox" data-patch="PB" {{bind-attr checked=patchEnabled.PB}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_PB'}}</label>
             <label><input type="checkbox" data-patch="P3" {{bind-attr checked=patchEnabled.P3}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_P3'}}</label>
             <label><input type="checkbox" data-patch="PC" {{bind-attr checked=patchEnabled.PC}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_PC'}}</label>
-            <label><input type="checkbox" data-patch="PD" {{bind-attr checked=patchEnabled.PD}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_PD'}}</label>
             <label><input type="checkbox" data-patch="PE" {{bind-attr checked=patchEnabled.PE}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_PE'}}</label>
             <label><input type="checkbox" data-patch="GC" {{bind-attr checked=patchEnabled.GC}}/> {{i18n 'stonehearth_performance_mod:ui.settings.panel.patch_GC'}}</label>
             <button {{action 'applyPatchToggles'}}>{{i18n 'stonehearth_performance_mod:ui.settings.save'}}</button>
